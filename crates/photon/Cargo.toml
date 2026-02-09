@@ -1,0 +1,31 @@
+[package]
+name = "photon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pure image processing pipeline for AI-powered tagging and embeddings"
+
+[[bin]]
+name = "photon"
+path = "src/main.rs"
+
+[dependencies]
+photon-core = { path = "../photon-core" }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Async
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
