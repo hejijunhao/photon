@@ -30,13 +30,16 @@
 
 // Module declarations
 pub mod config;
+pub mod embedding;
 pub mod error;
 pub mod output;
 pub mod pipeline;
+pub mod tagging;
 pub mod types;
 
 // Re-exports for convenient access
 pub use config::Config;
+pub use embedding::EmbeddingEngine;
 pub use error::{ConfigError, PhotonError, PipelineError, PipelineResult, Result};
 pub use output::{OutputFormat, OutputWriter};
 pub use pipeline::{ImageProcessor, ProcessOptions};

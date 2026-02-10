@@ -1,19 +1,55 @@
-# Phase 5: LLM Integration (BYOK)
+# Phase 5: LLM Enrichment (BYOK)
 
 > **Duration:** 2 weeks
-> **Milestone:** `photon process image.jpg --llm anthropic` outputs AI-generated description
+> **Milestone:** `photon enrich results.jsonl --llm anthropic` adds AI-generated descriptions to processed images
 
 ---
 
 ## Overview
 
-This phase implements LLM integration for generating rich, natural language descriptions of images. Following the "Bring Your Own Key" (BYOK) philosophy, users can use their preferred provider: local models via Ollama, self-hosted cloud via Hyperbolic, or commercial APIs (Anthropic, OpenAI).
+This phase implements LLM integration for generating rich, natural language **descriptions** of images. The LLM is a **completely separate enrichment step** — it runs after `photon process`, not during it. The fast pipeline (decode, embed, tag) never blocks on the network.
+
+Following the "Bring Your Own Key" (BYOK) philosophy, users can use their preferred provider: local models via Ollama, self-hosted cloud via Hyperbolic, or commercial APIs (Anthropic, OpenAI).
+
+**Two-command architecture:**
+
+```
+STEP 1: Fast pipeline (Phase 1-4) — no network, no LLM
+═══════════════════════════════════════════════════════
+photon process ./photos/ --output results.jsonl
+
+  → 10,000 images in ~3 hours
+  → Each image: decode, hash, embed, tag (~50ms + ~200ms SigLIP)
+  → Output: JSONL with tags, embedding, metadata, description: null
+
+
+STEP 2: LLM enrichment (Phase 5) — separate, optional, retryable
+═════════════════════════════════════════════════════════════════
+photon enrich results.jsonl --llm anthropic --output enriched.jsonl
+
+  → Reads JSONL, loads each image from file_path
+  → Sends image + tags (as context) to LLM
+  → Emits enrichment patches keyed by content_hash
+  → Consuming app does: UPDATE images SET description = '...' WHERE content_hash = 'abc'
+```
+
+**Why two commands instead of inline?**
+- The fast pipeline never blocks on network I/O (2-5s per LLM call)
+- Enrichment is retryable — if it fails halfway, re-run and skip already-enriched
+- Different LLM providers for different runs (cheap local pass, then re-enrich low-confidence with Claude)
+- Tags feed the LLM as context — by the time enrichment runs, we already know what's in the image
+- Users who don't want LLM descriptions never even think about it
+
+**Relationship to Phase 4 (Tagging):**
+- **Tags** (Phase 4): Fast (~1-5ms), local, structured, individual terms — powered by SigLIP + WordNet vocabulary
+- **Descriptions** (Phase 5): Slow (1-5s), requires LLM, free-form sentences — optional enrichment
+- Descriptions use tags as context to produce more focused, accurate output
 
 ---
 
 ## Prerequisites
 
-- Phase 4 completed (tagging working)
+- Phase 4a completed (tagging working — tags available for LLM context)
 - Understanding of vision-language models
 - API keys for testing (Anthropic, OpenAI) or Ollama installed locally
 
@@ -52,8 +88,11 @@ This phase implements LLM integration for generating rich, natural language desc
    pub mod hyperbolic;
    pub mod anthropic;
    pub mod openai;
+   pub mod retry;
+   pub mod enricher;
 
    pub use provider::{LlmProvider, LlmRequest, LlmResponse, ImageInput};
+   pub use enricher::{Enricher, EnrichmentPatch};
    ```
 
 2. Define the provider trait:
@@ -104,12 +143,24 @@ This phase implements LLM integration for generating rich, natural language desc
    }
 
    impl LlmRequest {
-       pub fn describe_image(image: ImageInput) -> Self {
+       /// Create a description request that includes tags as context.
+       /// Tags from Phase 4's SigLIP pipeline are fed to the LLM to
+       /// help it focus on what's actually in the image.
+       pub fn describe_image(image: ImageInput, tags: &[String]) -> Self {
+           let tag_context = if tags.is_empty() {
+               String::new()
+           } else {
+               format!("\n\nDetected subjects: {}.", tags.join(", "))
+           };
+
            Self {
                image,
-               prompt: "Describe this image in detail. Focus on the main subjects, \
-                        setting, mood, and any notable visual elements. \
-                        Keep the description concise but comprehensive (2-3 sentences).".to_string(),
+               prompt: format!(
+                   "Describe this image in detail. Focus on the main subjects, \
+                    setting, mood, and any notable visual elements. \
+                    Keep the description concise but comprehensive (2-3 sentences).{}",
+                   tag_context
+               ),
                max_tokens: Some(256),
                temperature: Some(0.3),
            }
@@ -170,7 +221,7 @@ This phase implements LLM integration for generating rich, natural language desc
 **Acceptance Criteria:**
 - [ ] Trait defines common interface
 - [ ] ImageInput handles base64 encoding
-- [ ] Request includes prompt customization
+- [ ] Request always includes tags as context
 - [ ] Response includes metadata (tokens, latency)
 - [ ] Factory creates providers from config
 
@@ -417,7 +468,6 @@ This phase implements LLM integration for generating rich, natural language desc
        }
 
        fn resolve_api_key(&self) -> String {
-           // Support environment variable references like ${HYPERBOLIC_API_KEY}
            if self.config.api_key.starts_with("${") && self.config.api_key.ends_with("}") {
                let var_name = &self.config.api_key[2..self.config.api_key.len()-1];
                std::env::var(var_name).unwrap_or_default()
@@ -450,7 +500,6 @@ This phase implements LLM integration for generating rich, natural language desc
 
            let url = format!("{}/chat/completions", self.config.endpoint);
 
-           // Format image as data URL
            let image_url = format!(
                "data:{};base64,{}",
                request.image.media_type,
@@ -836,7 +885,6 @@ This phase implements LLM integration for generating rich, natural language desc
                });
            }
 
-           // Format image as data URL
            let image_url = format!(
                "data:{};base64,{}",
                request.image.media_type,
@@ -915,9 +963,9 @@ This phase implements LLM integration for generating rich, natural language desc
 
 ---
 
-### 5.6 Retry Logic for Transient Failures
+### 5.6 Retry Logic and Timeout
 
-**Goal:** Implement retry with backoff for network/API errors.
+**Goal:** Implement retry with backoff and timeout for network/API errors.
 
 **Steps:**
 
@@ -928,7 +976,6 @@ This phase implements LLM integration for generating rich, natural language desc
    use std::time::Duration;
    use tokio::time::sleep;
 
-   use crate::config::PipelineConfig;
    use crate::error::PipelineError;
 
    use super::provider::{LlmProvider, LlmRequest, LlmResponse};
@@ -937,30 +984,42 @@ This phase implements LLM integration for generating rich, natural language desc
        inner: P,
        max_attempts: u32,
        delay_ms: u64,
+       timeout_ms: u64,
    }
 
    impl<P: LlmProvider> RetryingProvider<P> {
-       pub fn new(inner: P, config: &PipelineConfig) -> Self {
-           Self {
-               inner,
-               max_attempts: config.retry_attempts,
-               delay_ms: config.retry_delay_ms,
-           }
+       pub fn new(inner: P, max_attempts: u32, delay_ms: u64, timeout_ms: u64) -> Self {
+           Self { inner, max_attempts, delay_ms, timeout_ms }
        }
 
        pub async fn generate(&self, request: LlmRequest) -> Result<LlmResponse, PipelineError> {
            let mut last_error = None;
 
            for attempt in 1..=self.max_attempts {
-               match self.inner.generate(request.clone()).await {
-                   Ok(response) => return Ok(response),
-                   Err(e) => {
-                       // Check if error is retryable
+               let timeout_duration = Duration::from_millis(self.timeout_ms);
+
+               match tokio::time::timeout(timeout_duration, self.inner.generate(request.clone())).await {
+                   Ok(Ok(response)) => return Ok(response),
+                   Ok(Err(e)) => {
                        if Self::is_retryable(&e) && attempt < self.max_attempts {
                            tracing::warn!(
                                "LLM request failed (attempt {}/{}): {}. Retrying...",
                                attempt, self.max_attempts, e
                            );
+                           sleep(Duration::from_millis(self.delay_ms * attempt as u64)).await;
+                           last_error = Some(e);
+                       } else {
+                           return Err(e);
+                       }
+                   }
+                   Err(_) => {
+                       let e = PipelineError::Timeout {
+                           path: std::path::PathBuf::new(),
+                           stage: "llm".to_string(),
+                           timeout_ms: self.timeout_ms,
+                       };
+                       if attempt < self.max_attempts {
+                           tracing::warn!("LLM request timed out (attempt {}/{})", attempt, self.max_attempts);
                            sleep(Duration::from_millis(self.delay_ms * attempt as u64)).await;
                            last_error = Some(e);
                        } else {
@@ -979,11 +1038,10 @@ This phase implements LLM integration for generating rich, natural language desc
        fn is_retryable(error: &PipelineError) -> bool {
            match error {
                PipelineError::Llm { message, .. } => {
-                   // Retry on network errors, rate limits, server errors
                    message.contains("timeout") ||
                    message.contains("connection") ||
-                   message.contains("429") ||  // Rate limit
-                   message.contains("500") ||  // Server error
+                   message.contains("429") ||
+                   message.contains("500") ||
                    message.contains("502") ||
                    message.contains("503") ||
                    message.contains("504")
@@ -995,186 +1053,447 @@ This phase implements LLM integration for generating rich, natural language desc
    ```
 
 **Acceptance Criteria:**
-- [ ] Retries on network errors
-- [ ] Retries on rate limits (429)
-- [ ] Retries on server errors (5xx)
+- [ ] Retries on network errors, rate limits (429), server errors (5xx)
 - [ ] Exponential backoff between retries
 - [ ] Does not retry on auth errors (401, 403)
-
----
-
-### 5.7 LLM Timeout
-
-**Goal:** Implement timeout for LLM requests.
-
-**Steps:**
-
-1. Add timeout wrapper:
-   ```rust
-   use std::time::Duration;
-   use tokio::time::timeout;
-
-   impl<P: LlmProvider> RetryingProvider<P> {
-       pub async fn generate_with_timeout(
-           &self,
-           request: LlmRequest,
-           timeout_ms: u64,
-       ) -> Result<LlmResponse, PipelineError> {
-           let timeout_duration = Duration::from_millis(timeout_ms);
-
-           match timeout(timeout_duration, self.generate(request)).await {
-               Ok(result) => result,
-               Err(_) => Err(PipelineError::Timeout {
-                   path: std::path::PathBuf::new(),
-                   stage: "llm".to_string(),
-                   timeout_ms,
-               }),
-           }
-       }
-   }
-   ```
-
-**Acceptance Criteria:**
 - [ ] Timeout triggers after configured duration
-- [ ] Timeout produces clear error
-- [ ] Partial responses are discarded
+- [ ] Timeout errors are retryable
 
 ---
 
-### 5.8 Integrate LLM into Pipeline
+### 5.7 Enricher: The Core Enrichment Engine
 
-**Goal:** Wire LLM descriptions into the image processing pipeline.
+**Goal:** Implement the enrichment engine that reads processed JSONL, sends images to LLM, and emits description patches.
+
+This is the **key architectural piece** — it replaces the old inline-LLM-in-pipeline approach with a separate, retryable enrichment pass.
 
 **Steps:**
 
-1. Update `ImageProcessor`:
+1. Define the enrichment patch:
    ```rust
-   // In crates/photon-core/src/pipeline/processor.rs
+   // crates/photon-core/src/llm/enricher.rs
 
-   use crate::llm::{LlmProvider, LlmProviderFactory, LlmRequest, ImageInput};
-   use crate::llm::retry::RetryingProvider;
+   use std::path::{Path, PathBuf};
+   use std::io::{BufRead, BufReader, Write, BufWriter};
+   use std::sync::Arc;
 
-   pub struct ImageProcessor {
-       decoder: ImageDecoder,
-       thumbnail_gen: ThumbnailGenerator,
-       validator: Validator,
-       embedder: Arc<SigLipEmbedder>,
-       tagger: Option<Arc<ZeroShotTagger>>,
-       llm_provider: Option<Box<dyn LlmProvider>>,
-       llm_timeout_ms: u64,
+   use serde::{Deserialize, Serialize};
+
+   use crate::error::PipelineError;
+   use crate::types::ProcessedImage;
+
+   use super::provider::{ImageInput, LlmProvider, LlmRequest};
+   use super::retry::RetryingProvider;
+
+   /// A lightweight patch emitted by the enrichment pass.
+   /// Keyed by content_hash so the consuming application can
+   /// UPDATE ... SET description = '...' WHERE content_hash = '...'
+   #[derive(Debug, Clone, Serialize, Deserialize)]
+   pub struct EnrichmentPatch {
+       pub content_hash: String,
+       pub file_path: PathBuf,
+       pub description: String,
+       pub llm_model: String,
+       pub llm_tokens: Option<u32>,
+       pub llm_latency_ms: u64,
    }
 
-   pub struct ProcessOptions {
-       pub generate_thumbnail: bool,
-       pub use_llm: Option<String>,  // Provider name
-       pub llm_model: Option<String>,
+   pub struct EnrichOptions {
+       pub parallel: usize,
+       pub skip_existing: bool,
+       pub timeout_ms: u64,
+       pub retry_attempts: u32,
+       pub retry_delay_ms: u64,
    }
 
-   impl ImageProcessor {
-       pub async fn new(config: &Config) -> Result<Self> {
-           // ... existing initialization ...
-
-           // Initialize LLM provider if configured
-           let llm_provider = None; // Set via process options
-
-           Ok(Self {
-               // ...
-               llm_provider,
-               llm_timeout_ms: config.limits.llm_timeout_ms,
-           })
-       }
-
-       /// Set LLM provider for this processor
-       pub fn with_llm(mut self, provider: &str, config: &crate::config::LlmConfig) -> Self {
-           self.llm_provider = LlmProviderFactory::create(provider, config);
-           self
-       }
-
-       pub async fn process(&self, path: &Path) -> Result<ProcessedImage> {
-           // ... existing pipeline stages ...
-
-           // Generate LLM description if configured
-           let description = if let Some(provider) = &self.llm_provider {
-               self.generate_description(provider.as_ref(), &decoded.image, path).await?
-           } else {
-               None
-           };
-
-           // ...
-
-           Ok(ProcessedImage {
-               // ...
-               description,
-               // ...
-           })
-       }
-
-       async fn generate_description(
-           &self,
-           provider: &dyn LlmProvider,
-           image: &DynamicImage,
-           path: &Path,
-       ) -> Result<Option<String>> {
-           // Encode image for LLM
-           let mut buffer = std::io::Cursor::new(Vec::new());
-           image.write_to(&mut buffer, image::ImageFormat::Jpeg)
-               .map_err(|e| PipelineError::Llm {
-                   path: path.to_path_buf(),
-                   message: format!("Failed to encode image: {}", e),
-               })?;
-
-           let image_input = ImageInput::from_bytes(buffer.get_ref(), "jpeg");
-           let request = LlmRequest::describe_image(image_input);
-
-           match tokio::time::timeout(
-               Duration::from_millis(self.llm_timeout_ms),
-               provider.generate(request),
-           ).await {
-               Ok(Ok(response)) => {
-                   tracing::debug!(
-                       "LLM description generated in {}ms ({} tokens)",
-                       response.latency_ms,
-                       response.tokens_used.unwrap_or(0)
-                   );
-                   Ok(Some(response.text))
-               }
-               Ok(Err(e)) => {
-                   tracing::warn!("LLM description failed: {}", e);
-                   Ok(None) // Don't fail the whole image
-               }
-               Err(_) => {
-                   tracing::warn!("LLM request timed out after {}ms", self.llm_timeout_ms);
-                   Ok(None)
-               }
+   impl Default for EnrichOptions {
+       fn default() -> Self {
+           Self {
+               parallel: 4,
+               skip_existing: true,
+               timeout_ms: 60_000,
+               retry_attempts: 3,
+               retry_delay_ms: 1_000,
            }
        }
    }
-   ```
 
-2. Update CLI to support LLM flags:
-   ```rust
-   // In cli/process.rs
+   pub struct Enricher {
+       provider: Arc<dyn LlmProvider>,
+       options: EnrichOptions,
+   }
 
-   pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
-       let config = Config::load()?;
-       let mut processor = ImageProcessor::new(&config).await?;
-
-       // Configure LLM if requested
-       if let Some(provider) = &args.llm {
-           processor = processor.with_llm(provider, &config.llm);
-           tracing::info!("Using LLM provider: {}", provider);
+   impl Enricher {
+       pub fn new(provider: Box<dyn LlmProvider>, options: EnrichOptions) -> Self {
+           Self {
+               provider: Arc::from(provider),
+               options,
+           }
        }
 
-       // ... rest of execution
+       /// Run enrichment on a JSONL file of ProcessedImages.
+       ///
+       /// Reads each line, loads the image from file_path, sends it to the LLM
+       /// with tags as context, and emits an EnrichmentPatch per image.
+       ///
+       /// Returns (succeeded, failed, skipped) counts.
+       pub async fn enrich_file(
+           &self,
+           input_path: &Path,
+           output: &mut dyn Write,
+           existing_hashes: &std::collections::HashSet<String>,
+       ) -> Result<(u64, u64, u64), PipelineError> {
+           let file = std::fs::File::open(input_path)?;
+           let reader = BufReader::new(file);
+
+           let mut entries: Vec<ProcessedImage> = Vec::new();
+           for line in reader.lines() {
+               let line = line?;
+               if line.trim().is_empty() {
+                   continue;
+               }
+               match serde_json::from_str::<ProcessedImage>(&line) {
+                   Ok(image) => {
+                       // Skip if already enriched
+                       if self.options.skip_existing && existing_hashes.contains(&image.content_hash) {
+                           continue;
+                       }
+                       // Skip if already has description
+                       if self.options.skip_existing && image.description.is_some() {
+                           continue;
+                       }
+                       entries.push(image);
+                   }
+                   Err(e) => {
+                       tracing::warn!("Skipping malformed JSONL line: {}", e);
+                   }
+               }
+           }
+
+           let total = entries.len();
+           tracing::info!("Enriching {} images", total);
+
+           let mut succeeded: u64 = 0;
+           let mut failed: u64 = 0;
+           let skipped = 0u64; // already filtered above
+
+           // Process with concurrency limit
+           let semaphore = Arc::new(tokio::sync::Semaphore::new(self.options.parallel));
+
+           // For sequential output writing, collect results via channel
+           let (tx, mut rx) = tokio::sync::mpsc::channel::<EnrichmentPatch>(self.options.parallel * 2);
+
+           let provider = self.provider.clone();
+           let timeout_ms = self.options.timeout_ms;
+           let retry_attempts = self.options.retry_attempts;
+           let retry_delay_ms = self.options.retry_delay_ms;
+
+           // Spawn enrichment tasks
+           let mut handles = Vec::new();
+           for entry in entries {
+               let semaphore = semaphore.clone();
+               let tx = tx.clone();
+               let provider = provider.clone();
+
+               handles.push(tokio::spawn(async move {
+                   let _permit = semaphore.acquire().await.unwrap();
+
+                   let result = Self::enrich_single(
+                       &*provider,
+                       &entry,
+                       timeout_ms,
+                       retry_attempts,
+                       retry_delay_ms,
+                   ).await;
+
+                   match result {
+                       Ok(patch) => { let _ = tx.send(patch).await; true }
+                       Err(e) => {
+                           tracing::warn!("Failed to enrich {:?}: {}", entry.file_path, e);
+                           false
+                       }
+                   }
+               }));
+           }
+
+           // Drop our copy of tx so rx closes when all tasks finish
+           drop(tx);
+
+           // Write patches as they arrive
+           let mut writer = BufWriter::new(output);
+           while let Some(patch) = rx.recv().await {
+               let line = serde_json::to_string(&patch).unwrap();
+               writeln!(writer, "{}", line)?;
+               writer.flush()?;
+               succeeded += 1;
+           }
+
+           // Wait for all tasks and count failures
+           for handle in handles {
+               match handle.await {
+                   Ok(true) => {} // already counted via channel
+                   Ok(false) => { failed += 1; }
+                   Err(_) => { failed += 1; }
+               }
+           }
+
+           Ok((succeeded, failed, skipped))
+       }
+
+       /// Enrich a single image.
+       async fn enrich_single(
+           provider: &dyn LlmProvider,
+           entry: &ProcessedImage,
+           timeout_ms: u64,
+           retry_attempts: u32,
+           retry_delay_ms: u64,
+       ) -> Result<EnrichmentPatch, PipelineError> {
+           // Load image from disk
+           let image_bytes = std::fs::read(&entry.file_path)?;
+           let format = entry.format.as_str();
+           let image_input = ImageInput::from_bytes(&image_bytes, format);
+
+           // Build tag context from Phase 4 tags
+           let tag_names: Vec<String> = entry.tags.iter()
+               .map(|t| t.name.clone())
+               .collect();
+
+           let request = LlmRequest::describe_image(image_input, &tag_names);
+
+           // Send to LLM with retry
+           let timeout_duration = std::time::Duration::from_millis(timeout_ms);
+           let mut last_error = None;
+
+           for attempt in 1..=retry_attempts {
+               match tokio::time::timeout(timeout_duration, provider.generate(request.clone())).await {
+                   Ok(Ok(response)) => {
+                       return Ok(EnrichmentPatch {
+                           content_hash: entry.content_hash.clone(),
+                           file_path: entry.file_path.clone(),
+                           description: response.text,
+                           llm_model: response.model,
+                           llm_tokens: response.tokens_used,
+                           llm_latency_ms: response.latency_ms,
+                       });
+                   }
+                   Ok(Err(e)) => {
+                       tracing::warn!("LLM failed for {:?} (attempt {}): {}", entry.file_path, attempt, e);
+                       last_error = Some(e);
+                   }
+                   Err(_) => {
+                       tracing::warn!("LLM timed out for {:?} (attempt {})", entry.file_path, attempt);
+                       last_error = Some(PipelineError::Timeout {
+                           path: entry.file_path.clone(),
+                           stage: "llm".to_string(),
+                           timeout_ms,
+                       });
+                   }
+               }
+
+               if attempt < retry_attempts {
+                   tokio::time::sleep(std::time::Duration::from_millis(retry_delay_ms * attempt as u64)).await;
+               }
+           }
+
+           Err(last_error.unwrap())
+       }
    }
    ```
 
 **Acceptance Criteria:**
-- [ ] `--llm anthropic` enables Claude descriptions
-- [ ] `--llm ollama` uses local Ollama
-- [ ] Description appears in JSON output
-- [ ] LLM failures don't fail the entire image
-- [ ] Timeout is respected
+- [ ] Reads JSONL input file correctly
+- [ ] Loads images from `file_path` on disk
+- [ ] Tags from Phase 4 passed as context to LLM
+- [ ] Emits `EnrichmentPatch` per image (content_hash + description)
+- [ ] Concurrent enrichment with configurable parallelism
+- [ ] Skips images that already have descriptions
+- [ ] Retry with backoff per image
+- [ ] Failed images don't stop the batch
+
+---
+
+### 5.8 CLI: `photon enrich` Command
+
+**Goal:** Add the `enrich` subcommand to the CLI.
+
+**Steps:**
+
+1. Create `crates/photon/src/cli/enrich.rs`:
+   ```rust
+   use std::path::PathBuf;
+   use clap::Args;
+
+   use photon_core::config::Config;
+   use photon_core::llm::{Enricher, LlmProviderFactory, EnrichmentPatch};
+   use photon_core::llm::enricher::EnrichOptions;
+
+   #[derive(Args)]
+   pub struct EnrichArgs {
+       /// Input JSONL file from `photon process`
+       pub input: PathBuf,
+
+       /// LLM provider to use
+       #[arg(long)]
+       pub llm: String,
+
+       /// Output file for enrichment patches (default: stdout)
+       #[arg(short, long)]
+       pub output: Option<PathBuf>,
+
+       /// Number of concurrent LLM requests
+       #[arg(long, default_value = "4")]
+       pub parallel: usize,
+
+       /// Skip images that already have descriptions
+       #[arg(long, default_value = "true")]
+       pub skip_existing: bool,
+
+       /// LLM timeout in milliseconds
+       #[arg(long, default_value = "60000")]
+       pub timeout: u64,
+   }
+
+   pub async fn execute(args: EnrichArgs) -> anyhow::Result<()> {
+       let config = Config::load()?;
+
+       // Create LLM provider
+       let provider = LlmProviderFactory::create(&args.llm, &config.llm)
+           .ok_or_else(|| anyhow::anyhow!(
+               "Unknown or unconfigured LLM provider: '{}'\n\
+                Available: ollama, anthropic, openai, hyperbolic\n\
+                Configure in ~/.photon/config.toml under [llm.{}]",
+               args.llm, args.llm
+           ))?;
+
+       // Check availability
+       if !provider.is_available().await {
+           anyhow::bail!(
+               "LLM provider '{}' is not available. Check your configuration and API keys.",
+               args.llm
+           );
+       }
+
+       tracing::info!("Using LLM provider: {}", args.llm);
+
+       // Load existing enrichment hashes if output file exists
+       let existing_hashes = if args.skip_existing {
+           if let Some(ref path) = args.output {
+               load_enriched_hashes(path)?
+           } else {
+               std::collections::HashSet::new()
+           }
+       } else {
+           std::collections::HashSet::new()
+       };
+
+       let options = EnrichOptions {
+           parallel: args.parallel,
+           skip_existing: args.skip_existing,
+           timeout_ms: args.timeout,
+           retry_attempts: 3,
+           retry_delay_ms: 1_000,
+       };
+
+       let enricher = Enricher::new(provider, options);
+
+       // Output destination
+       let mut output: Box<dyn std::io::Write> = match &args.output {
+           Some(path) => Box::new(
+               std::fs::OpenOptions::new()
+                   .create(true)
+                   .append(true)  // Append mode — safe to re-run
+                   .open(path)?
+           ),
+           None => Box::new(std::io::stdout()),
+       };
+
+       let (succeeded, failed, skipped) = enricher
+           .enrich_file(&args.input, &mut *output, &existing_hashes)
+           .await?;
+
+       tracing::info!(
+           "Enrichment complete: {} succeeded, {} failed, {} skipped",
+           succeeded, failed, skipped
+       );
+
+       Ok(())
+   }
+
+   fn load_enriched_hashes(path: &PathBuf) -> anyhow::Result<std::collections::HashSet<String>> {
+       let mut hashes = std::collections::HashSet::new();
+       if path.exists() {
+           let content = std::fs::read_to_string(path)?;
+           for line in content.lines() {
+               if let Ok(patch) = serde_json::from_str::<EnrichmentPatch>(line) {
+                   hashes.insert(patch.content_hash);
+               }
+           }
+           tracing::info!("Found {} already-enriched images", hashes.len());
+       }
+       Ok(hashes)
+   }
+   ```
+
+2. Register in CLI:
+   ```rust
+   // In cli/mod.rs
+
+   #[derive(Subcommand)]
+   pub enum Commands {
+       /// Process images (fast pipeline: decode, hash, embed, tag)
+       Process(process::ProcessArgs),
+
+       /// Enrich processed images with LLM descriptions
+       Enrich(enrich::EnrichArgs),
+
+       /// Manage configuration
+       Config(config::ConfigArgs),
+   }
+   ```
+
+**Usage examples:**
+
+```bash
+# Step 1: Fast pipeline — processes all images, no network dependency
+photon process ./photos/ --output results.jsonl
+
+# Step 2: Enrich with LLM — separate, optional, retryable
+photon enrich results.jsonl --llm anthropic --output enriched.jsonl
+
+# Re-run enrichment (skips already-enriched images)
+photon enrich results.jsonl --llm anthropic --output enriched.jsonl
+
+# Use different provider for a second pass
+photon enrich results.jsonl --llm ollama --output enriched.jsonl
+
+# Higher concurrency for cloud APIs
+photon enrich results.jsonl --llm openai --output enriched.jsonl --parallel 8
+```
+
+**Output format:**
+
+The enrichment file is a JSONL of patches:
+```jsonl
+{"content_hash":"a7f3b2c1...","file_path":"/photos/beach.jpg","description":"A sandy tropical beach with turquoise waters and palm trees swaying in the breeze.","llm_model":"claude-sonnet-4-20250514","llm_tokens":47,"llm_latency_ms":1823}
+{"content_hash":"b8e4c3d2...","file_path":"/photos/dog.jpg","description":"A golden labrador retriever lying on a Persian rug in a warmly lit living room.","llm_model":"claude-sonnet-4-20250514","llm_tokens":52,"llm_latency_ms":2104}
+```
+
+**Consuming application pattern:**
+```
+1. Read results.jsonl    → INSERT into DB (tags, embedding, metadata)
+2. Read enriched.jsonl   → UPDATE in DB  (SET description WHERE content_hash = ...)
+```
+
+No conflicts, no overwrites. The LLM only fills in nullable `description` fields.
+
+**Acceptance Criteria:**
+- [ ] `photon enrich input.jsonl --llm anthropic` works
+- [ ] Output is JSONL of `EnrichmentPatch` objects
+- [ ] `--output` writes to file in append mode
+- [ ] Re-running skips already-enriched images
+- [ ] `--parallel` controls concurrency
+- [ ] Progress feedback during enrichment
+- [ ] Clear error message for unconfigured provider
 
 ---
 
@@ -1199,7 +1518,8 @@ async fn test_ollama_provider() {
 
     let image = std::fs::read("tests/fixtures/images/test.jpg").unwrap();
     let request = LlmRequest::describe_image(
-        ImageInput::from_bytes(&image, "jpeg")
+        ImageInput::from_bytes(&image, "jpeg"),
+        &["dog".to_string(), "carpet".to_string()],
     );
 
     let response = provider.generate(request).await.unwrap();
@@ -1225,7 +1545,8 @@ async fn test_anthropic_provider() {
     let provider = AnthropicProvider::new(config);
     let image = std::fs::read("tests/fixtures/images/test.jpg").unwrap();
     let request = LlmRequest::describe_image(
-        ImageInput::from_bytes(&image, "jpeg")
+        ImageInput::from_bytes(&image, "jpeg"),
+        &[],
     );
 
     let response = provider.generate(request).await.unwrap();
@@ -1235,28 +1556,48 @@ async fn test_anthropic_provider() {
 }
 
 #[tokio::test]
-async fn test_llm_in_pipeline() {
-    let mut config = Config::default();
-    config.llm.anthropic = Some(AnthropicConfig {
-        enabled: true,
-        api_key: "${ANTHROPIC_API_KEY}".to_string(),
-        model: "claude-sonnet-4-20250514".to_string(),
-    });
+async fn test_enrichment_patch_serialization() {
+    let patch = EnrichmentPatch {
+        content_hash: "abc123".to_string(),
+        file_path: PathBuf::from("/photos/test.jpg"),
+        description: "A test image.".to_string(),
+        llm_model: "test-model".to_string(),
+        llm_tokens: Some(10),
+        llm_latency_ms: 500,
+    };
 
-    // Skip if no API key
-    if std::env::var("ANTHROPIC_API_KEY").is_err() {
-        return;
-    }
+    let json = serde_json::to_string(&patch).unwrap();
+    let deserialized: EnrichmentPatch = serde_json::from_str(&json).unwrap();
 
-    let processor = ImageProcessor::new(&config).await.unwrap()
-        .with_llm("anthropic", &config.llm);
+    assert_eq!(deserialized.content_hash, "abc123");
+    assert_eq!(deserialized.description, "A test image.");
+}
 
-    let result = processor.process(Path::new("tests/fixtures/images/test.jpg")).await;
-    let image = result.unwrap();
+#[tokio::test]
+async fn test_enricher_skips_existing() {
+    // Create a JSONL with one image that already has a description
+    let image = ProcessedImage {
+        content_hash: "abc123".to_string(),
+        description: Some("Already described.".to_string()),
+        // ... other fields ...
+    };
 
-    assert!(image.description.is_some());
-    let desc = image.description.unwrap();
-    assert!(!desc.is_empty());
+    // Write to temp file
+    let input_path = temp_dir().join("test_enrich_input.jsonl");
+    std::fs::write(&input_path, serde_json::to_string(&image).unwrap()).unwrap();
+
+    let existing = std::collections::HashSet::new();
+    let provider = MockProvider::new(); // test helper
+    let enricher = Enricher::new(Box::new(provider), EnrichOptions::default());
+
+    let mut output = Vec::new();
+    let (succeeded, failed, skipped) = enricher
+        .enrich_file(&input_path, &mut output, &existing)
+        .await
+        .unwrap();
+
+    // Should skip the image since it already has a description
+    assert_eq!(succeeded, 0);
 }
 ```
 
@@ -1266,16 +1607,19 @@ async fn test_llm_in_pipeline() {
 
 Before moving to Phase 6:
 
-- [ ] `photon process image.jpg --llm ollama` works with local Ollama
-- [ ] `photon process image.jpg --llm anthropic` works with Claude
-- [ ] `photon process image.jpg --llm openai` works with GPT-4V
-- [ ] `photon process image.jpg --llm hyperbolic` works with Hyperbolic
-- [ ] Description appears in JSON output
-- [ ] LLM failures don't crash the pipeline
-- [ ] Timeout works correctly
+- [ ] `photon enrich results.jsonl --llm ollama` works with local Ollama
+- [ ] `photon enrich results.jsonl --llm anthropic` works with Claude
+- [ ] `photon enrich results.jsonl --llm openai` works with GPT-4V
+- [ ] `photon enrich results.jsonl --llm hyperbolic` works with Hyperbolic
+- [ ] Output is JSONL of `EnrichmentPatch` objects
+- [ ] Re-running skips already-enriched images (append mode)
+- [ ] LLM failures don't crash the enrichment batch
+- [ ] Timeout works correctly per image
 - [ ] Retry logic handles transient failures
 - [ ] Environment variable API keys work
-- [ ] `--no-description` skips LLM even if configured
+- [ ] `--parallel` controls concurrent LLM requests
+- [ ] Tags from Phase 4 appear in LLM prompts
+- [ ] `photon process` does NOT touch any LLM — pipeline stays fast
 - [ ] All integration tests pass
 
 ---
@@ -1286,27 +1630,30 @@ Before moving to Phase 6:
 crates/photon-core/src/
 ├── llm/
 │   ├── mod.rs           # Module exports
-│   ├── provider.rs      # Provider trait
+│   ├── provider.rs      # Provider trait + factory
 │   ├── ollama.rs        # Ollama implementation
 │   ├── hyperbolic.rs    # Hyperbolic implementation
 │   ├── anthropic.rs     # Anthropic implementation
 │   ├── openai.rs        # OpenAI implementation
-│   └── retry.rs         # Retry logic
+│   ├── retry.rs         # Retry + timeout logic
+│   └── enricher.rs      # Enrichment engine (reads JSONL, emits patches)
 ├── config.rs            # Updated with LLM configs
-└── pipeline/
-    └── processor.rs     # Updated with LLM integration
 
 crates/photon/src/cli/
-└── process.rs           # Updated with --llm flag
+├── mod.rs               # Updated with Enrich subcommand
+└── enrich.rs            # `photon enrich` command
 ```
+
+**Note:** `processor.rs` is NOT modified. The fast pipeline has zero LLM dependency.
 
 ---
 
 ## Notes
 
-- LLM descriptions add significant latency (1-5 seconds per image)
-- Consider making descriptions optional/async for batch processing
-- Keep descriptions concise to manage token costs
-- Store the model used for reproducibility
-- Consider caching descriptions for the same content_hash
+- LLM enrichment is fully decoupled from the fast pipeline — `photon process` never blocks on network
+- The enrichment output file is append-mode — safe to re-run after failures
+- Tags from Phase 4 are passed as context, producing better descriptions than image-only prompts
 - For Ollama, recommend llama3.2-vision or similar vision-capable models
+- Concurrency should be tuned per provider: local Ollama (1-2), cloud APIs (4-8)
+- Consider adding a `--dry-run` flag to preview which images would be enriched
+- Future: could support enrichment directly to a database instead of JSONL patches

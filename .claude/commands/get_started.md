@@ -1,0 +1,1 @@
+To get started, look at docs/vision.md, docs/blueprint.md and docs/changelog.md (first couple 100 lines only, as its a long doc)

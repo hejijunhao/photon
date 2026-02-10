@@ -210,7 +210,11 @@ This final phase focuses on production readiness: parallel batch processing with
            }
 
            // Initialize processor
-           let processor = Arc::new(ImageProcessor::new(&self.config).await?);
+           let mut processor = ImageProcessor::new(&self.config);
+           // Load optional capabilities (follows opt-in pattern from Phases 3-4)
+           let _ = processor.load_embedding(&self.config);
+           let _ = processor.load_tagging(&self.config);
+           let processor = Arc::new(processor);
 
            // Progress bar
            let progress = Arc::new(BatchProgress::new(to_process));
@@ -345,7 +349,9 @@ This final phase focuses on production readiness: parallel batch processing with
 
        if args.input.is_file() {
            // Single file processing
-           let processor = ImageProcessor::new(&config).await?;
+           let mut processor = ImageProcessor::new(&config);
+           let _ = processor.load_embedding(&config);
+           let _ = processor.load_tagging(&config);
            let result = processor.process(&args.input).await?;
 
            let output = if args.format == OutputFormat::Json {
@@ -640,7 +646,9 @@ This final phase focuses on production readiness: parallel batch processing with
    |-----------|--------|--------|
    | Decode + metadata | 200 img/sec | ? |
    | SigLIP embedding | 50-100 img/min | ? |
+   | Tag scoring (80K vocab) | < 10ms per image | ? |
    | Full pipeline (no LLM) | 50 img/min | ? |
+   | First-run vocab encoding | < 3 min (4a) / < 3 sec (4b) | ? |
 
 **Acceptance Criteria:**
 - [ ] Meets performance targets on M1 Mac
@@ -664,10 +672,11 @@ This final phase focuses on production readiness: parallel batch processing with
 
    ## Features
 
-   - 🖼️ Process images to extract embeddings, tags, and metadata
-   - 🚀 Fast: ~50 images/minute on Apple Silicon
-   - 📦 Single binary, no Python required
-   - 🔌 BYOK: Use Ollama, Anthropic, OpenAI, or Hyperbolic for descriptions
+   - Adaptive zero-shot tagging: 80K WordNet vocabulary, self-organizing to your library
+   - SigLIP embeddings: 768-dim vectors for image similarity and search
+   - Fast: ~50 images/minute on CPU (tagging adds < 10ms per image)
+   - Single binary, no Python required
+   - BYOK: Use Ollama, Anthropic, OpenAI, or Hyperbolic for optional LLM descriptions
 
    ## Installation
 
@@ -698,8 +707,8 @@ This final phase focuses on production readiness: parallel batch processing with
    # Process a directory
    photon process ./photos/ --output results.jsonl
 
-   # With LLM descriptions
-   photon process image.jpg --llm anthropic
+   # Enrich with LLM descriptions (separate step)
+   photon enrich results.jsonl --llm anthropic --output enriched.jsonl
    ```
 
    ## Configuration
@@ -720,7 +729,10 @@ This final phase focuses on production readiness: parallel batch processing with
      "content_hash": "a7f3b2c1...",
      "embedding": [0.023, -0.156, ...],
      "tags": [
-       {"name": "beach", "confidence": 0.94, "category": "scene"}
+       {"name": "sandy beach", "confidence": 0.91},
+       {"name": "ocean", "confidence": 0.87},
+       {"name": "tropical", "confidence": 0.74, "category": "scene"},
+       {"name": "palm tree", "confidence": 0.68, "path": "plant > tree > palm tree"}
      ],
      "description": "A sandy tropical beach..."
    }
@@ -867,17 +879,21 @@ This final phase focuses on production readiness: parallel batch processing with
 
    All notable changes to this project will be documented in this file.
 
-   ## [0.1.0] - 2024-XX-XX
+   ## [0.1.0] - 2026-XX-XX
 
    ### Added
    - Initial release
    - Image processing pipeline (JPEG, PNG, WebP, HEIC)
    - SigLIP embeddings (768-dim vectors)
-   - Zero-shot tagging with confidence scores
+   - Adaptive zero-shot tagging with WordNet vocabulary (~80K terms)
+   - Self-organizing vocabulary (three-pool relevance system)
+   - WordNet hierarchy deduplication (ancestor suppression)
+   - Progressive vocabulary encoding (fast startup)
    - EXIF metadata extraction
    - Content and perceptual hashing
    - Thumbnail generation (WebP)
-   - LLM descriptions (Ollama, Anthropic, OpenAI, Hyperbolic)
+   - Optional LLM descriptions (Ollama, Anthropic, OpenAI, Hyperbolic)
+   - Tags passed as context to LLM for improved descriptions
    - Batch processing with progress bar
    - Skip already-processed images
    - TOML configuration
@@ -927,10 +943,10 @@ This final phase focuses on production readiness: parallel batch processing with
    photon process test.heic
    photon process test.webp
 
-   # LLM providers
-   photon process test.jpg --llm ollama
-   photon process test.jpg --llm anthropic
-   photon process test.jpg --llm openai
+   # LLM enrichment (separate from process)
+   photon enrich results.jsonl --llm ollama --output enriched.jsonl
+   photon enrich results.jsonl --llm anthropic --output enriched.jsonl
+   photon enrich results.jsonl --llm openai --output enriched.jsonl
 
    # Edge cases
    photon process empty.jpg
@@ -972,8 +988,9 @@ Before v0.1.0 release:
 - [ ] Progress bar displays correctly
 - [ ] Output is valid JSON/JSONL
 - [ ] Embeddings are 768 dimensions
-- [ ] Tags have confidence and category
-- [ ] LLM descriptions work with all providers
+- [ ] Tags have confidence (and optional category/path fields)
+- [ ] Tags are from WordNet vocabulary (not hardcoded list)
+- [ ] `photon enrich` produces LLM descriptions with all providers
 
 **User Experience:**
 - [ ] `photon --help` is clear and complete
@@ -988,10 +1005,12 @@ Before v0.1.0 release:
 - [ ] Environment variables work for API keys
 - [ ] `photon config show` displays config
 
-**Models:**
+**Models & Vocabulary:**
 - [ ] `photon models download` works
 - [ ] Auto-download on first use works
 - [ ] `photon models list` shows status
+- [ ] Vocabulary files are present or auto-downloaded
+- [ ] Label bank caches correctly on first run
 
 **Performance:**
 - [ ] Meets 50 img/min target (no LLM)

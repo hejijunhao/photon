@@ -30,9 +30,21 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub no_thumbnail: bool,
 
+    /// Disable embedding generation
+    #[arg(long)]
+    pub no_embedding: bool,
+
+    /// Disable zero-shot tagging
+    #[arg(long)]
+    pub no_tagging: bool,
+
     /// Disable LLM descriptions
     #[arg(long)]
     pub no_description: bool,
+
+    /// Quality preset: fast (224 model) or high (384 model)
+    #[arg(long, value_enum, default_value = "fast")]
+    pub quality: Quality,
 
     /// Thumbnail size in pixels
     #[arg(long, default_value = "256")]
@@ -65,6 +77,16 @@ impl std::fmt::Display for OutputFormat {
     }
 }
 
+/// Quality preset for SigLIP vision model resolution.
+#[derive(Clone, Copy, Debug, ValueEnum, Default)]
+pub enum Quality {
+    /// Fast processing with base 224 model (default)
+    #[default]
+    Fast,
+    /// Higher detail with base 384 model (~3-4× slower)
+    High,
+}
+
 /// Supported LLM providers.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum LlmProvider {
@@ -91,6 +113,7 @@ impl std::fmt::Display for LlmProvider {
 
 /// Execute the process command.
 pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
+    use photon_core::embedding::EmbeddingEngine;
     use photon_core::output::OutputFormat as CoreOutputFormat;
     use photon_core::{Config, ImageProcessor, OutputWriter, ProcessOptions};
     use std::fs::File;
@@ -112,13 +135,63 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
         config.thumbnail.enabled = false;
     }
 
+    // Apply quality preset — select model variant and image size
+    match args.quality {
+        Quality::High => {
+            let high_model = "siglip-base-patch16-384".to_string();
+            if EmbeddingEngine::model_exists(
+                &photon_core::config::EmbeddingConfig {
+                    model: high_model.clone(),
+                    image_size: 384,
+                    device: config.embedding.device.clone(),
+                },
+                &config.model_dir(),
+            ) {
+                config.embedding.model = high_model;
+                config.embedding.image_size = 384;
+            } else {
+                tracing::warn!(
+                    "Base 384 model not found. Falling back to 224. \
+                     Run `photon models download` to install additional models."
+                );
+            }
+        }
+        Quality::Fast => {
+            // Default — 224 model, no changes needed
+        }
+    }
+
     // Create processor
-    let processor = ImageProcessor::new(&config);
+    let mut processor = ImageProcessor::new(&config);
+
+    // Load embedding model unless disabled
+    if !args.no_embedding {
+        if EmbeddingEngine::model_exists(&config.embedding, &config.model_dir()) {
+            match processor.load_embedding(&config) {
+                Ok(()) => tracing::info!("Embedding model loaded"),
+                Err(e) => tracing::warn!("Failed to load embedding model: {e}"),
+            }
+        } else {
+            tracing::warn!(
+                "Embedding model not found. Run `photon models download` to enable embeddings."
+            );
+        }
+    }
+
+    // Load tagging system unless disabled
+    if !args.no_tagging && config.tagging.enabled && processor.has_embedding() {
+        match processor.load_tagging(&config) {
+            Ok(()) => tracing::info!("Tagging system loaded"),
+            Err(e) => tracing::warn!("Failed to load tagging system: {e}"),
+        }
+    }
 
     // Create process options
     let options = ProcessOptions {
         skip_thumbnail: args.no_thumbnail,
         skip_perceptual_hash: false,
+        skip_embedding: args.no_embedding || !processor.has_embedding(),
+        skip_tagging: args.no_tagging || !processor.has_tagging(),
     };
 
     // Discover files

@@ -26,6 +26,9 @@ serde_json.workspace = true
 # Error handling
 anyhow.workspace = true
 
+# HTTP (model download)
+reqwest.workspace = true
+
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true

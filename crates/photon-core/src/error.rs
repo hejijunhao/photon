@@ -61,6 +61,10 @@ pub enum PipelineError {
     #[error("Tagging failed for {path}: {message}")]
     Tagging { path: PathBuf, message: String },
 
+    /// Model loading or initialization failed (not per-image)
+    #[error("Model error: {message}")]
+    Model { message: String },
+
     /// LLM description generation failed
     #[error("LLM error for {path}: {message}")]
     Llm { path: PathBuf, message: String },

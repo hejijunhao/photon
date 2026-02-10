@@ -1,0 +1,271 @@
+# Supplemental vocabulary (non-noun visual concepts)
+# Format: term<TAB>category
+# Categories: scene, mood, style, weather, time, activity, color, composition
+# Scenes
+beach	scene
+kitchen	scene
+bedroom	scene
+bathroom	scene
+living room	scene
+office	scene
+classroom	scene
+restaurant	scene
+library	scene
+garden	scene
+park	scene
+forest	scene
+mountain	scene
+desert	scene
+ocean	scene
+lake	scene
+river	scene
+waterfall	scene
+cityscape	scene
+skyline	scene
+street	scene
+alley	scene
+highway	scene
+bridge	scene
+harbor	scene
+airport	scene
+stadium	scene
+church	scene
+temple	scene
+castle	scene
+ruins	scene
+farm	scene
+vineyard	scene
+market	scene
+plaza	scene
+courtyard	scene
+balcony	scene
+rooftop	scene
+basement	scene
+garage	scene
+workshop	scene
+studio	scene
+gallery	scene
+museum	scene
+theater	scene
+concert	scene
+carnival	scene
+festival	scene
+wedding	scene
+funeral	scene
+playground	scene
+gym	scene
+pool	scene
+spa	scene
+hospital	scene
+laboratory	scene
+warehouse	scene
+construction site	scene
+parking lot	scene
+train station	scene
+subway	scene
+bus stop	scene
+dock	scene
+pier	scene
+boardwalk	scene
+trail	scene
+campsite	scene
+cave	scene
+cliff	scene
+valley	scene
+meadow	scene
+field	scene
+orchard	scene
+greenhouse	scene
+aquarium	scene
+zoo	scene
+# Mood / Atmosphere
+peaceful	mood
+dramatic	mood
+mysterious	mood
+romantic	mood
+melancholy	mood
+joyful	mood
+serene	mood
+chaotic	mood
+eerie	mood
+cozy	mood
+luxurious	mood
+rustic	mood
+minimalist	mood
+vibrant	mood
+somber	mood
+whimsical	mood
+nostalgic	mood
+energetic	mood
+tranquil	mood
+intense	mood
+# Style
+vintage	style
+modern	style
+retro	style
+artistic	style
+abstract	style
+realistic	style
+surreal	style
+gothic	style
+art deco	style
+industrial	style
+bohemian	style
+classic	style
+contemporary	style
+traditional	style
+futuristic	style
+elegant	style
+casual	style
+formal	style
+professional	style
+candid	style
+portrait	style
+landscape	style
+macro	style
+aerial	style
+panoramic	style
+black and white	style
+monochrome	style
+high contrast	style
+soft focus	style
+long exposure	style
+# Weather
+sunny	weather
+cloudy	weather
+rainy	weather
+snowy	weather
+foggy	weather
+stormy	weather
+windy	weather
+hazy	weather
+overcast	weather
+clear sky	weather
+thunderstorm	weather
+rainbow	weather
+frost	weather
+ice	weather
+mist	weather
+# Time of Day
+sunrise	time
+sunset	time
+dawn	time
+dusk	time
+twilight	time
+golden hour	time
+blue hour	time
+midday	time
+midnight	time
+nighttime	time
+daytime	time
+# Activities
+cooking	activity
+eating	activity
+drinking	activity
+reading	activity
+writing	activity
+painting	activity
+drawing	activity
+dancing	activity
+singing	activity
+playing music	activity
+running	activity
+walking	activity
+hiking	activity
+climbing	activity
+swimming	activity
+surfing	activity
+skiing	activity
+cycling	activity
+driving	activity
+flying	activity
+sailing	activity
+fishing	activity
+gardening	activity
+shopping	activity
+working	activity
+studying	activity
+sleeping	activity
+meditating	activity
+exercising	activity
+celebrating	activity
+traveling	activity
+camping	activity
+photographing	activity
+skateboarding	activity
+snowboarding	activity
+kayaking	activity
+yoga	activity
+# Colors (dominant)
+red	color
+blue	color
+green	color
+yellow	color
+orange	color
+purple	color
+pink	color
+brown	color
+black	color
+white	color
+gray	color
+gold	color
+silver	color
+turquoise	color
+teal	color
+navy	color
+maroon	color
+cream	color
+beige	color
+pastel	color
+# Composition / Subject
+close-up	composition
+wide angle	composition
+overhead	composition
+symmetrical	composition
+silhouette	composition
+reflection	composition
+shadow	composition
+pattern	composition
+texture	composition
+leading lines	composition
+rule of thirds	composition
+depth of field	composition
+bokeh	composition
+motion blur	composition
+frozen motion	composition
+# Common Subjects
+people	subject
+crowd	subject
+couple	subject
+family	subject
+children	subject
+baby	subject
+elderly	subject
+pet	subject
+wildlife	subject
+bird	subject
+insect	subject
+flower	subject
+tree	subject
+plant	subject
+food	subject
+drink	subject
+vehicle	subject
+building	subject
+architecture	subject
+sculpture	subject
+graffiti	subject
+sign	subject
+text	subject
+book	subject
+technology	subject
+phone	subject
+computer	subject
+furniture	subject
+clothing	subject
+jewelry	subject
+instrument	subject
+toy	subject
+sports equipment	subject
+tools	subject
+art	subject

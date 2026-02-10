@@ -1,0 +1,153 @@
+//! Pre-computed term embeddings for fast scoring.
+//!
+//! The label bank stores a flat N×768 matrix of text embeddings (one per vocabulary term)
+//! that can be dot-producted against image embeddings for instant scoring.
+
+use std::path::Path;
+
+use crate::error::PipelineError;
+
+use super::text_encoder::SigLipTextEncoder;
+use super::vocabulary::Vocabulary;
+
+/// Pre-computed term embeddings for scoring.
+///
+/// Stores a single flat matrix (N × 768, row-major) for efficient dot product.
+pub struct LabelBank {
+    /// Flat matrix: N × 768 stored row-major.
+    matrix: Vec<f32>,
+    embedding_dim: usize,
+    term_count: usize,
+}
+
+impl LabelBank {
+    /// Encode all vocabulary terms and build the label bank.
+    ///
+    /// Uses the "a photo of a {term}" prompt template and batches many terms
+    /// per ONNX inference call for efficiency.
+    pub fn encode_all(
+        vocabulary: &Vocabulary,
+        text_encoder: &SigLipTextEncoder,
+        batch_size: usize,
+    ) -> Result<Self, PipelineError> {
+        let terms = vocabulary.all_terms();
+        let embedding_dim = 768;
+        let mut matrix: Vec<f32> = Vec::with_capacity(terms.len() * embedding_dim);
+
+        tracing::info!(
+            "Encoding {} vocabulary terms (this may take a few minutes on first run)...",
+            terms.len()
+        );
+
+        // Collect all prompts — use "a photo of a {term}" for each
+        let prompts: Vec<String> = terms
+            .iter()
+            .map(|t| format!("a photo of a {}", t.display_name))
+            .collect();
+
+        // Encode in large batches for efficiency
+        for (batch_idx, chunk) in prompts.chunks(batch_size).enumerate() {
+            let embeddings = text_encoder.encode_batch(
+                &chunk.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            )?;
+
+            for emb in &embeddings {
+                matrix.extend_from_slice(emb);
+            }
+
+            // Progress logging
+            let encoded = (batch_idx + 1) * batch_size;
+            if encoded % 5000 < batch_size || encoded >= terms.len() {
+                tracing::info!(
+                    "  Encoded {}/{} terms",
+                    encoded.min(terms.len()),
+                    terms.len()
+                );
+            }
+        }
+
+        let term_count = matrix.len() / embedding_dim;
+        tracing::info!(
+            "Label bank ready: {} terms x {} dims ({:.1} MB)",
+            term_count,
+            embedding_dim,
+            (term_count * embedding_dim * 4) as f64 / 1_000_000.0
+        );
+
+        Ok(Self {
+            matrix,
+            embedding_dim,
+            term_count,
+        })
+    }
+
+    /// Save label bank to disk as raw f32 binary for fast reload.
+    pub fn save(&self, path: &Path) -> Result<(), PipelineError> {
+        let bytes: Vec<u8> = self
+            .matrix
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        std::fs::write(path, &bytes).map_err(|e| PipelineError::Model {
+            message: format!("Failed to save label bank to {:?}: {}", path, e),
+        })?;
+        tracing::info!(
+            "Saved label bank to {:?} ({:.1} MB)",
+            path,
+            bytes.len() as f64 / 1_000_000.0
+        );
+        Ok(())
+    }
+
+    /// Load label bank from a raw f32 binary file.
+    pub fn load(path: &Path, term_count: usize) -> Result<Self, PipelineError> {
+        let embedding_dim = 768;
+        let expected_len = term_count * embedding_dim * 4; // 4 bytes per f32
+
+        let bytes = std::fs::read(path).map_err(|e| PipelineError::Model {
+            message: format!("Failed to read label bank from {:?}: {}", path, e),
+        })?;
+
+        if bytes.len() != expected_len {
+            return Err(PipelineError::Model {
+                message: format!(
+                    "Label bank size mismatch: expected {} bytes ({} terms), got {} bytes",
+                    expected_len, term_count, bytes.len()
+                ),
+            });
+        }
+
+        let matrix: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+
+        tracing::info!("Loaded label bank: {} terms from {:?}", term_count, path);
+
+        Ok(Self {
+            matrix,
+            embedding_dim,
+            term_count,
+        })
+    }
+
+    /// Check if a saved label bank exists at the given path.
+    pub fn exists(path: &Path) -> bool {
+        path.exists()
+    }
+
+    /// Get the flat matrix for batch dot product.
+    pub fn matrix(&self) -> &[f32] {
+        &self.matrix
+    }
+
+    /// Get the embedding dimension (768).
+    pub fn embedding_dim(&self) -> usize {
+        self.embedding_dim
+    }
+
+    /// Get the number of terms in the bank.
+    pub fn term_count(&self) -> usize {
+        self.term_count
+    }
+}

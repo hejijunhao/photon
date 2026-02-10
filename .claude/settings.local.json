@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check:*)",
+      "WebSearch",
+      "Bash(cargo test:*)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:github.com)",
+      "Bash(curl:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo --version:*)",
+      "Bash(rustc:*)",
+      "Bash(python3:*)",
+      "Bash(pip install:*)",
+      "Bash(cargo run:*)",
+      "Bash(ps:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)"
+    ]
+  }
+}

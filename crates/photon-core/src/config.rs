@@ -86,6 +86,18 @@ impl Config {
         PathBuf::from(expanded.into_owned())
     }
 
+    /// Get the resolved vocabulary directory path (with ~ expansion).
+    pub fn vocabulary_dir(&self) -> PathBuf {
+        let expanded = shellexpand::tilde(&self.tagging.vocabulary.dir);
+        PathBuf::from(expanded.into_owned())
+    }
+
+    /// Get the taxonomy directory path (for cached label bank).
+    pub fn taxonomy_dir(&self) -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".photon").join("taxonomy")
+    }
+
     /// Serialize the config to a pretty TOML string.
     pub fn to_toml(&self) -> Result<String, ConfigError> {
         toml::to_string_pretty(self).map_err(|e| ConfigError::ValidationError(e.to_string()))
@@ -198,8 +210,12 @@ impl Default for LimitsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbeddingConfig {
-    /// Model name/variant
+    /// Model name/variant ("siglip-base-patch16" or "siglip-base-patch16-384")
     pub model: String,
+
+    /// Image input size — derived from model variant, not set directly.
+    /// 224 for base, 384 for 384 variant.
+    pub image_size: u32,
 
     /// Inference device ("cpu", "metal", "cuda")
     pub device: String,
@@ -209,7 +225,19 @@ impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
             model: "siglip-base-patch16".to_string(),
-            device: "metal".to_string(),
+            image_size: 224,
+            device: "cpu".to_string(),
+        }
+    }
+}
+
+impl EmbeddingConfig {
+    /// Resolve image size from model name.
+    pub fn image_size_for_model(model: &str) -> u32 {
+        if model.contains("384") {
+            384
+        } else {
+            224
         }
     }
 }
@@ -246,22 +274,45 @@ impl Default for ThumbnailConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TaggingConfig {
-    /// Minimum confidence threshold for tags
+    /// Whether zero-shot tagging is enabled
+    pub enabled: bool,
+
+    /// Minimum confidence threshold for tags (after sigmoid).
+    /// Default 0.0 disables filtering — use max_tags to limit output.
+    /// SigLIP base model produces very low absolute sigmoid values;
+    /// relative ordering is meaningful, not absolute confidence.
     pub min_confidence: f32,
 
     /// Maximum number of tags per image
     pub max_tags: usize,
 
-    /// Whether zero-shot tagging is enabled
-    pub zero_shot_enabled: bool,
+    /// Vocabulary configuration
+    pub vocabulary: VocabularyConfig,
 }
 
 impl Default for TaggingConfig {
     fn default() -> Self {
         Self {
-            min_confidence: 0.5,
-            max_tags: 20,
-            zero_shot_enabled: true,
+            enabled: true,
+            min_confidence: 0.0,
+            max_tags: 15,
+            vocabulary: VocabularyConfig::default(),
+        }
+    }
+}
+
+/// Vocabulary file settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VocabularyConfig {
+    /// Directory containing vocabulary files
+    pub dir: String,
+}
+
+impl Default for VocabularyConfig {
+    fn default() -> Self {
+        Self {
+            dir: "~/.photon/vocabulary".to_string(),
         }
     }
 }
