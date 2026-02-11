@@ -402,8 +402,7 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
         }
 
         // Write batch results to file (core records)
-        if !results.is_empty() && args.output.is_some() {
-            let output_path = args.output.as_ref().unwrap();
+        if let Some(output_path) = args.output.as_ref().filter(|_| !results.is_empty()) {
             // Append if skip_existing (file already has data), otherwise create
             let file = if args.skip_existing && output_path.exists() {
                 std::fs::OpenOptions::new().append(true).open(output_path)?

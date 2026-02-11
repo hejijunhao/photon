@@ -23,7 +23,15 @@
       "Bash(git commit:*)",
       "Bash(wc:*)",
       "mcp__ide__getDiagnostics",
-      "Bash(cargo doc:*)"
+      "Bash(cargo doc:*)",
+      "Bash(cargo tree:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git cat-file:*)",
+      "Bash(grep:*)",
+      "Bash(cargo license:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(done)",
+      "Bash(ls:*)"
     ]
   }
 }

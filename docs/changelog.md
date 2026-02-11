@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.10](#0410---2026-02-11)** — CI fix: replace `is_some()`+`unwrap()` with `Option::filter()` to satisfy `clippy::unnecessary_unwrap`
 - **[0.4.9](#049---2026-02-11)** — Code polishing: hot-path clone elimination, O(N×K)→O(N+K) sibling lookups, dead code removal, test hygiene
 - **[0.4.8](#048---2026-02-11)** — Benchmark fix: correct API calls for `ImageDecoder` and `ThumbnailGenerator` instance methods
 - **[0.4.7](#047---2026-02-11)** — Polish & release: progress bar, `--skip-existing`, summary stats, error hints, benchmarks, CI/CD, MIT license
@@ -22,6 +23,18 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.10] - 2026-02-11
+
+### Summary
+
+CI clippy fix. Rust 1.93's `clippy::unnecessary_unwrap` lint (promoted to deny via `-D warnings`) rejected the `is_some()` guard + `.unwrap()` pattern in batch output writing. Replaced with `Option::filter()` to destructure via `if let` in one expression. 118 tests passing, zero clippy warnings.
+
+### Fixed
+
+- **`process.rs` — `unnecessary_unwrap` lint** — `args.output.is_some()` guard followed by `args.output.as_ref().unwrap()` replaced with `args.output.as_ref().filter(|_| !results.is_empty())` destructured via `if let Some(output_path)`
 
 ---
 
@@ -569,11 +582,11 @@ crates/
 
 ---
 
-[0.4.1]: https://github.com/crimsonsun/photon/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/crimsonsun/photon/compare/v0.3.3...v0.4.0
-[0.3.3]: https://github.com/crimsonsun/photon/compare/v0.3.2...v0.3.3
-[0.3.2]: https://github.com/crimsonsun/photon/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/crimsonsun/photon/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/crimsonsun/photon/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/crimsonsun/photon/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/crimsonsun/photon/releases/tag/v0.1.0
+[0.4.1]: https://github.com/hejijunhao/photon/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/hejijunhao/photon/compare/v0.3.3...v0.4.0
+[0.3.3]: https://github.com/hejijunhao/photon/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/hejijunhao/photon/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/hejijunhao/photon/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/hejijunhao/photon/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/hejijunhao/photon/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/hejijunhao/photon/releases/tag/v0.1.0

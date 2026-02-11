@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue" alt="License"></a>
+  <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue" alt="License"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-2021_edition-orange" alt="Rust"></a>
 </p>
 
@@ -45,7 +45,7 @@ image.jpg ──▶ Photon ──▶ { embedding, tags, metadata, hash, thumbnai
 
 ```bash
 # Build from source
-git clone https://github.com/crimsonsun/photon.git
+git clone https://github.com/hejijunhao/photon.git
 cd photon
 cargo build --release
 
@@ -252,7 +252,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-photon-core = { git = "https://github.com/crimsonsun/photon.git" }
+photon-core = { git = "https://github.com/hejijunhao/photon.git" }
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -335,4 +335,4 @@ cargo bench -p photon-core  # Run benchmarks
 
 ## License
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE), at your option.
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.
