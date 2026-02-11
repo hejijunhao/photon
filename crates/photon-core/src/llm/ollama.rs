@@ -7,7 +7,6 @@ use super::provider::{LlmProvider, LlmRequest, LlmResponse};
 use crate::error::PipelineError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Ollama provider for local vision model inference.
@@ -86,27 +85,35 @@ impl LlmProvider for OllamaProvider {
             .send()
             .await
             .map_err(|e| PipelineError::Llm {
-                path: PathBuf::new(),
                 message: format!("Ollama request failed: {e}"),
+                status_code: None,
             })?;
 
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(PipelineError::Llm {
-                path: PathBuf::new(),
                 message: format!("Ollama HTTP {status}: {text}"),
+                status_code: Some(status.as_u16()),
             });
         }
 
         let ollama_resp: OllamaResponse =
             resp.json().await.map_err(|e| PipelineError::Llm {
-                path: PathBuf::new(),
                 message: format!("Failed to parse Ollama response: {e}"),
+                status_code: None,
             })?;
 
+        let text = ollama_resp.response.trim().to_string();
+        if text.is_empty() {
+            return Err(PipelineError::Llm {
+                message: "Ollama returned empty response — no content generated".to_string(),
+                status_code: None,
+            });
+        }
+
         Ok(LlmResponse {
-            text: ollama_resp.response.trim().to_string(),
+            text,
             model: self.model.clone(),
             tokens_used: None, // Ollama doesn't report token counts in generate endpoint
             latency_ms: start.elapsed().as_millis() as u64,

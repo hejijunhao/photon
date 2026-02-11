@@ -6,6 +6,8 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.2](#042---2026-02-11)** — Post-fix review: invalid JSON in batch+file+LLM, empty response guards, dead field removal
+- **[0.4.1](#041---2026-02-11)** — Post-Phase-5 bug fixes: structured retry classification, async I/O, enricher counting, stdout data loss fix
 - **[0.4.0](#040---2026-02-11)** — LLM integration: BYOK description enrichment with dual-stream output (Ollama, Anthropic, OpenAI, Hyperbolic)
 - **[0.3.3](#033---2026-02-10)** — Pre-Phase 5 cleanup: clippy fixes, streaming downloads, cache invalidation, dead code removal
 - **[0.3.2](#032---2026-02-09)** — Zero-shot tagging: 68K-term vocabulary, SigLIP text encoder, label bank caching
@@ -13,6 +15,56 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.2] - 2026-02-11
+
+### Summary
+
+Second-pass review of the LLM integration layer, resolving 5 bugs (1 medium, 3 low, 1 cosmetic) and 2 code smells. Key fix: `--format json --output file.json --llm <provider>` now produces a valid JSON array instead of concatenated objects. Also adds empty-response guards to Anthropic/Ollama (matching the existing OpenAI fix), removes a dead field from `PipelineError::Llm`, and restores missing enrichment stats logging. 50 tests passing, zero clippy warnings.
+
+### Fixed
+
+- **Batch + file + JSON + `--llm` produces invalid JSON** (medium) — core and enrichment records were written individually via `writer.write()`, producing concatenated JSON objects instead of a valid array; now buffers all `OutputRecord`s and calls `writer.write_all()` for correct `[...]` output
+- **Anthropic/Ollama silently accept empty LLM responses** — both providers could produce `EnrichmentPatch` with a blank description; added empty/whitespace checks matching the existing OpenAI guard, returning `PipelineError::Llm` on empty content
+- **Enrichment stats not logged in batch + stdout + `--llm` path** — the `(succeeded, failed)` return value from `enrich_batch()` was silently discarded; now captured and passed to `log_enrichment_stats()`
+- **`PipelineError::Llm { path }` always `None`** — the `path: Option<PathBuf>` field was never populated anywhere in the codebase (path context is carried by `EnrichResult::Failure` instead); removed the dead field from the error variant and all 17 construction sites
+- **Misleading comment on stdout enrichment block** — updated `// JSONL only` to `// JSON and JSONL` to match actual behavior
+
+### Improved
+
+- **Redundant retry substring check** — removed `message.contains("connection")` from retry fallback since `"connect"` already matches it as a substring
+- **`EnrichResult` now derives `Debug`** — improves log and test output visibility
+
+### Tests
+
+50 tests passing (unchanged count — no new tests needed; existing coverage exercises the changed paths).
+
+---
+
+## [0.4.1] - 2026-02-11
+
+### Summary
+
+Post-Phase-5 code review resolving 7 bugs in the LLM integration layer. Key fixes: structured HTTP status codes for retry classification (replacing brittle string matching), correct enricher success/failure counting, silent data loss in batch JSON stdout mode, and async file I/O in the enricher. 50 tests passing (+2 new regression tests), zero clippy warnings.
+
+### Fixed
+
+- **Enricher success/failure counting** — spawned tasks now return a `bool` indicating LLM outcome; previously `Ok(())` was always returned regardless of success, making the `(succeeded, failed)` tuple meaningless
+- **Batch JSON stdout data loss with `--llm`** — core records were silently dropped when using `--format json --llm <provider>` to stdout; removed the `!llm_enabled` guard and wrapped core records in `OutputRecord::Core` before printing
+- **String-based retry classification** — added `status_code: Option<u16>` to `PipelineError::Llm`; retry logic now matches on typed HTTP status codes instead of substring matching (`"500"` in message body could false-positive)
+- **Empty OpenAI `choices` array** — `unwrap_or_default()` silently produced blank descriptions; replaced with `ok_or_else(...)` to surface as a retryable error
+- **Blocking `std::fs::read` in async context** — replaced with `tokio::fs::read().await` in `enrich_single` to avoid stalling tokio worker threads on large image reads
+- **`HyperbolicProvider::timeout()` dead code** — returned a hardcoded 60s that was never called; now delegates to the inner `OpenAiProvider` for consistency
+- **`PathBuf::new()` sentinel in LLM errors** — changed `path: PathBuf` to `path: Option<PathBuf>` in the `Llm` error variant; providers use `None` instead of empty paths, fixing error messages that read `"LLM error for : ..."`
+
+### Tests
+
+50 tests passing (+2 new regression tests):
+
+- `test_message_with_500_in_body_not_retryable_without_status` — verifies string "500" in message body is not misclassified as retryable
+- `test_connection_error_retryable_without_status` — verifies connection errors are retryable via message fallback
 
 ---
 
@@ -303,6 +355,7 @@ crates/
 
 ---
 
+[0.4.1]: https://github.com/crimsonsun/photon/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/crimsonsun/photon/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/crimsonsun/photon/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/crimsonsun/photon/compare/v0.3.1...v0.3.2

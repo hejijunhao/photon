@@ -338,20 +338,12 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
             let mut writer = OutputWriter::new(BufWriter::new(file), output_format, false);
 
             if llm_enabled {
-                // Wrap in OutputRecord::Core
-                for result in &results {
-                    writer.write(&OutputRecord::Core(Box::new(result.clone())))?;
-                }
-            } else if matches!(args.format, OutputFormat::Json) {
-                writer.write_all(&results)?;
-            } else {
-                for result in &results {
-                    writer.write(result)?;
-                }
-            }
+                // ── Phase 2: LLM enrichment to file (only if --llm) ──
+                let mut all_records: Vec<OutputRecord> = results
+                    .iter()
+                    .map(|r| OutputRecord::Core(Box::new(r.clone())))
+                    .collect();
 
-            // ── Phase 2: LLM enrichment (only if --llm) ──
-            if llm_enabled {
                 if let Some(enricher) = create_enricher(&args, &config)? {
                     tracing::info!("Starting LLM enrichment for {} images...", results.len());
 
@@ -376,10 +368,18 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
                     };
 
                     let (enriched, enrich_failed) = enricher_handle.await?;
-                    for record in file_writer_rx.try_iter() {
-                        writer.write(&record)?;
-                    }
+                    all_records.extend(file_writer_rx.try_iter());
                     log_enrichment_stats(enriched, enrich_failed);
+                }
+
+                // write_all produces a valid JSON array for JSON format,
+                // or one record per line for JSONL — correct in both cases.
+                writer.write_all(&all_records)?;
+            } else if matches!(args.format, OutputFormat::Json) {
+                writer.write_all(&results)?;
+            } else {
+                for result in &results {
+                    writer.write(result)?;
                 }
             }
 
@@ -387,19 +387,27 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
             tracing::info!("Output written to {:?}", output_path);
         } else if !results.is_empty()
             && args.output.is_none()
-            && !llm_enabled
             && matches!(args.format, OutputFormat::Json)
         {
-            // JSON array to stdout (non-LLM batch)
-            println!("{}", serde_json::to_string_pretty(&results)?);
+            if llm_enabled {
+                // JSON array to stdout with OutputRecord::Core wrappers
+                let core_records: Vec<OutputRecord> = results
+                    .iter()
+                    .map(|r| OutputRecord::Core(Box::new(r.clone())))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&core_records)?);
+            } else {
+                // JSON array to stdout (non-LLM batch)
+                println!("{}", serde_json::to_string_pretty(&results)?);
+            }
         }
 
-        // LLM enrichment for stdout streaming (JSONL only)
+        // LLM enrichment for stdout streaming (JSON and JSONL)
         if llm_enabled && args.output.is_none() {
             if let Some(enricher) = create_enricher(&args, &config)? {
                 tracing::info!("Starting LLM enrichment for {} images...", results.len());
 
-                enricher
+                let (enriched, enrich_failed) = enricher
                     .enrich_batch(&results, |enrich_result| match enrich_result {
                         EnrichResult::Success(patch) => {
                             let record = OutputRecord::Enrichment(patch);
@@ -412,6 +420,7 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
                         }
                     })
                     .await;
+                log_enrichment_stats(enriched, enrich_failed);
             }
         }
 

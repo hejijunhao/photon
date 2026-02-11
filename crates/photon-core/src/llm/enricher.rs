@@ -36,6 +36,7 @@ impl Default for EnrichOptions {
 }
 
 /// Result of enriching a single image.
+#[derive(Debug)]
 pub enum EnrichResult {
     Success(EnrichmentPatch),
     Failure(PathBuf, String),
@@ -89,8 +90,10 @@ impl Enricher {
             let handle = tokio::spawn(async move {
                 let result =
                     enrich_single(&provider, &image, &options).await;
+                let success = matches!(&result, EnrichResult::Success(_));
                 on_result(result);
                 drop(permit);
+                success
             });
 
             handles.push(handle);
@@ -102,7 +105,8 @@ impl Enricher {
 
         for handle in handles {
             match handle.await {
-                Ok(()) => succeeded += 1,
+                Ok(true) => succeeded += 1,
+                Ok(false) => failed += 1,
                 Err(e) => {
                     tracing::error!("Enrichment task panicked: {e}");
                     failed += 1;
@@ -121,7 +125,7 @@ async fn enrich_single(
     options: &EnrichOptions,
 ) -> EnrichResult {
     // Read image from disk and encode as base64
-    let image_bytes = match std::fs::read(&image.file_path) {
+    let image_bytes = match tokio::fs::read(&image.file_path).await {
         Ok(bytes) => bytes,
         Err(e) => {
             return EnrichResult::Failure(

@@ -8,7 +8,6 @@ use crate::error::PipelineError;
 use crate::types::Tag;
 use async_trait::async_trait;
 use base64::Engine;
-use std::path::PathBuf;
 use std::time::Duration;
 
 /// Base64-encoded image ready to send to an LLM API.
@@ -164,9 +163,9 @@ impl LlmProviderFactory {
                 let cfg = config.anthropic.clone().unwrap_or_default();
                 let api_key = resolve_env_var(&cfg.api_key).ok_or_else(|| {
                     PipelineError::Llm {
-                        path: PathBuf::new(),
                         message: "Anthropic API key not set. Set ANTHROPIC_API_KEY env var."
                             .to_string(),
+                        status_code: None,
                     }
                 })?;
                 let model = model_override
@@ -180,8 +179,8 @@ impl LlmProviderFactory {
                 let cfg = config.openai.clone().unwrap_or_default();
                 let api_key =
                     resolve_env_var(&cfg.api_key).ok_or_else(|| PipelineError::Llm {
-                        path: PathBuf::new(),
                         message: "OpenAI API key not set. Set OPENAI_API_KEY env var.".to_string(),
+                        status_code: None,
                     })?;
                 let model = model_override
                     .map(String::from)
@@ -194,9 +193,9 @@ impl LlmProviderFactory {
                 let cfg = config.hyperbolic.clone().unwrap_or_default();
                 let api_key =
                     resolve_env_var(&cfg.api_key).ok_or_else(|| PipelineError::Llm {
-                        path: PathBuf::new(),
                         message: "Hyperbolic API key not set. Set HYPERBOLIC_API_KEY env var."
                             .to_string(),
+                        status_code: None,
                     })?;
                 let model = model_override
                     .map(String::from)
@@ -208,8 +207,8 @@ impl LlmProviderFactory {
                 )))
             }
             other => Err(PipelineError::Llm {
-                path: PathBuf::new(),
                 message: format!("Unknown LLM provider: {other}"),
+                status_code: None,
             }),
         }
     }

@@ -38,6 +38,6 @@ impl LlmProvider for HyperbolicProvider {
     }
 
     fn timeout(&self) -> Duration {
-        Duration::from_secs(60)
+        self.inner.timeout()
     }
 }

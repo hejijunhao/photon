@@ -65,9 +65,16 @@ pub enum PipelineError {
     #[error("Model error: {message}")]
     Model { message: String },
 
-    /// LLM description generation failed
-    #[error("LLM error for {path}: {message}")]
-    Llm { path: PathBuf, message: String },
+    /// LLM description generation failed.
+    ///
+    /// Path context is carried by `EnrichResult::Failure`, not this variant.
+    #[error("LLM error: {message}")]
+    Llm {
+        message: String,
+        /// HTTP status code from the provider response, if available.
+        /// Used for structured retry classification (e.g., 429, 5xx).
+        status_code: Option<u16>,
+    },
 
     /// Operation timed out
     #[error("Timeout in {stage} stage for {path} after {timeout_ms}ms")]

@@ -6,7 +6,6 @@ use super::provider::{LlmProvider, LlmRequest, LlmResponse};
 use crate::error::PipelineError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Anthropic provider using the Messages API.
@@ -125,23 +124,23 @@ impl LlmProvider for AnthropicProvider {
             .send()
             .await
             .map_err(|e| PipelineError::Llm {
-                path: PathBuf::new(),
                 message: format!("Anthropic request failed: {e}"),
+                status_code: None,
             })?;
 
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(PipelineError::Llm {
-                path: PathBuf::new(),
                 message: format!("Anthropic HTTP {status}: {text}"),
+                status_code: Some(status.as_u16()),
             });
         }
 
         let messages_resp: MessagesResponse =
             resp.json().await.map_err(|e| PipelineError::Llm {
-                path: PathBuf::new(),
                 message: format!("Failed to parse Anthropic response: {e}"),
+                status_code: None,
             })?;
 
         let text = messages_resp
@@ -151,8 +150,17 @@ impl LlmProvider for AnthropicProvider {
             .collect::<Vec<_>>()
             .join("");
 
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Err(PipelineError::Llm {
+                message: "Anthropic returned empty response — no text content generated"
+                    .to_string(),
+                status_code: None,
+            });
+        }
+
         Ok(LlmResponse {
-            text: text.trim().to_string(),
+            text,
             model: messages_resp.model,
             tokens_used: Some(
                 messages_resp.usage.input_tokens + messages_resp.usage.output_tokens,

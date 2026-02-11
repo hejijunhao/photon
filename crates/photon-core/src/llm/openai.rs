@@ -6,7 +6,6 @@ use super::provider::{LlmProvider, LlmRequest, LlmResponse};
 use crate::error::PipelineError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// OpenAI provider using Chat Completions API.
@@ -134,30 +133,33 @@ impl LlmProvider for OpenAiProvider {
             .send()
             .await
             .map_err(|e| PipelineError::Llm {
-                path: PathBuf::new(),
                 message: format!("OpenAI request failed: {e}"),
+                status_code: None,
             })?;
 
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(PipelineError::Llm {
-                path: PathBuf::new(),
                 message: format!("OpenAI HTTP {status}: {text}"),
+                status_code: Some(status.as_u16()),
             });
         }
 
         let chat_resp: ChatResponse =
             resp.json().await.map_err(|e| PipelineError::Llm {
-                path: PathBuf::new(),
                 message: format!("Failed to parse OpenAI response: {e}"),
+                status_code: None,
             })?;
 
         let text = chat_resp
             .choices
             .first()
             .and_then(|c| c.message.content.clone())
-            .unwrap_or_default();
+            .ok_or_else(|| PipelineError::Llm {
+                message: "OpenAI returned empty choices array — no content generated".to_string(),
+                status_code: None,
+            })?;
 
         Ok(LlmResponse {
             text: text.trim().to_string(),

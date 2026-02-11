@@ -12,16 +12,17 @@ use std::time::Duration;
 pub fn is_retryable(error: &PipelineError) -> bool {
     match error {
         PipelineError::Timeout { .. } => true,
-        PipelineError::Llm { message, .. } => {
-            // Rate limit or server error
-            message.contains("429")
-                || message.contains("rate limit")
-                || message.contains("500")
-                || message.contains("502")
-                || message.contains("503")
-                || message.contains("504")
-                || message.contains("timeout")
-                || message.contains("connection")
+        PipelineError::Llm {
+            status_code,
+            message,
+            ..
+        } => {
+            // Classify by HTTP status code when available (structured)
+            if let Some(code) = status_code {
+                return *code == 429 || (500..=599).contains(code);
+            }
+            // Fallback for non-HTTP errors (e.g., connection refused, DNS failure)
+            message.contains("timed out") || message.contains("connect")
         }
         _ => false,
     }
@@ -53,8 +54,8 @@ mod tests {
     #[test]
     fn test_rate_limit_is_retryable() {
         let err = PipelineError::Llm {
-            path: PathBuf::from("test.jpg"),
             message: "HTTP 429: rate limit exceeded".to_string(),
+            status_code: Some(429),
         };
         assert!(is_retryable(&err));
     }
@@ -62,8 +63,8 @@ mod tests {
     #[test]
     fn test_server_error_is_retryable() {
         let err = PipelineError::Llm {
-            path: PathBuf::from("test.jpg"),
             message: "HTTP 503: service unavailable".to_string(),
+            status_code: Some(503),
         };
         assert!(is_retryable(&err));
     }
@@ -71,8 +72,8 @@ mod tests {
     #[test]
     fn test_auth_error_not_retryable() {
         let err = PipelineError::Llm {
-            path: PathBuf::from("test.jpg"),
             message: "HTTP 401: unauthorized".to_string(),
+            status_code: Some(401),
         };
         assert!(!is_retryable(&err));
     }
@@ -84,6 +85,25 @@ mod tests {
             message: "invalid header".to_string(),
         };
         assert!(!is_retryable(&err));
+    }
+
+    #[test]
+    fn test_message_with_500_in_body_not_retryable_without_status() {
+        // Previously "Processed 500 tokens" would falsely match as retryable
+        let err = PipelineError::Llm {
+            message: "Processed 500 tokens successfully".to_string(),
+            status_code: None,
+        };
+        assert!(!is_retryable(&err));
+    }
+
+    #[test]
+    fn test_connection_error_retryable_without_status() {
+        let err = PipelineError::Llm {
+            message: "connection refused".to_string(),
+            status_code: None,
+        };
+        assert!(is_retryable(&err));
     }
 
     #[test]
