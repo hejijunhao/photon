@@ -4,7 +4,9 @@
 //! between image embeddings and pre-computed text embeddings.
 
 pub mod label_bank;
+pub mod progressive;
 pub mod scorer;
+pub mod seed;
 pub mod text_encoder;
 pub mod vocabulary;
 

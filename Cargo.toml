@@ -33,6 +33,9 @@ futures-util = "0.3"
 # Async traits (object-safe async fn in trait for Box<dyn LlmProvider>)
 async-trait = "0.1"
 
+# Random (seeded sampling for progressive encoding seed selection)
+rand = "0.8"
+
 # Utilities
 directories = "5"
 shellexpand = "3"

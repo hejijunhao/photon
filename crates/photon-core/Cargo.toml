@@ -40,7 +40,13 @@ ndarray = "0.16"
 # Tagging / Text encoder (Phase 4)
 tokenizers = "0.20"
 
+# Progressive encoding seed selection (Phase 4b)
+rand.workspace = true
+
 # LLM integration (Phase 5)
 async-trait.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.3](#043---2026-02-11)** — Progressive encoding: first-run cold-start reduced from ~90min to ~30s via seed vocabulary + background chunked encoding
 - **[0.4.2](#042---2026-02-11)** — Post-fix review: invalid JSON in batch+file+LLM, empty response guards, dead field removal
 - **[0.4.1](#041---2026-02-11)** — Post-Phase-5 bug fixes: structured retry classification, async I/O, enricher counting, stdout data loss fix
 - **[0.4.0](#040---2026-02-11)** — LLM integration: BYOK description enrichment with dual-stream output (Ollama, Anthropic, OpenAI, Hyperbolic)
@@ -15,6 +16,45 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.3] - 2026-02-11
+
+### Summary
+
+Progressive encoding for first-run cold-start optimization. Previously, `load_tagging()` encoded all ~68K vocabulary terms in a single blocking call (~90 minutes on CPU) before the first image could be processed. Now encodes a seed set of ~2K high-value terms synchronously (~30 seconds), starts processing immediately, then background-encodes remaining terms in 5K-term chunks — progressively swapping in richer scorers via `RwLock`. Subsequent runs are unchanged (cached `label_bank.bin` loads instantly). 68 tests passing (+18 new), zero clippy warnings.
+
+### Added
+
+- **`SeedSelector`** (`tagging/seed.rs`) — deterministic seed term selection with three-tier priority: all supplemental terms (scenes, moods, styles), curated seed file matches, then seeded random fill to reach target size
+- **`ProgressiveEncoder`** (`tagging/progressive.rs`) — background encoding orchestration using `tokio::spawn` + `spawn_blocking`; encodes in chunks, appends to a running `LabelBank`, and atomically swaps progressively larger `TagScorer` instances via `RwLock`
+- **`seed_terms.txt`** (`data/vocabulary/`) — 1041 curated common visual nouns (animals, vehicles, nature, food, people, buildings, furniture, clothing, sports, technology, music, weather), all validated against `wordnet_nouns.txt`
+- **`ProgressiveConfig`** — new sub-section of `TaggingConfig` with `enabled` (default: true), `seed_size` (default: 2000), `chunk_size` (default: 5000)
+- **`Vocabulary::empty()`** and **`Vocabulary::subset(indices)`** — create empty vocabularies and sub-vocabularies from index lists with rebuilt `by_name` index
+- **`LabelBank::empty()`** and **`LabelBank::append(other)`** — placeholder creation and incremental matrix growth for the append-only encoding pattern
+- **`TagScorer::label_bank()`** and **`TagScorer::vocabulary()`** — accessor methods for progressive encoder to clone/inspect scorer state
+
+### Changed
+
+- **`ImageProcessor::tag_scorer`** — type changed from `Option<Arc<TagScorer>>` to `Option<Arc<RwLock<TagScorer>>>` to support concurrent reads with progressive write swaps
+- **`load_tagging()`** — rewritten with three code paths: cached (fast, unchanged), progressive (new, default on cache miss), and blocking (legacy fallback when `progressive.enabled = false` or no tokio runtime)
+- **`process_with_options()` scoring** — now acquires `read()` lock on the scorer before calling `score()`, enabling safe concurrent access during background swaps
+- **`LabelBank`** — now derives `Clone` (needed for running bank pattern in progressive encoder)
+
+### Dependencies
+
+- **`rand` 0.8** (new) — seeded deterministic random sampling for seed term selection
+- **`tempfile` 3** (dev, new) — test helpers for temporary vocabulary files
+
+### Tests
+
+68 tests passing (+18 new):
+
+- **Vocabulary**: `test_empty_vocabulary`, `test_subset_preserves_terms`, `test_subset_empty`, `test_subset_rebuilds_index`, `test_subset_preserves_hypernyms`
+- **LabelBank**: `test_empty_label_bank`, `test_append_grows_matrix`, `test_append_preserves_existing`, `test_append_empty_to_empty`, `test_append_to_empty`, `test_append_dimension_mismatch`
+- **SeedSelector**: `test_select_includes_supplemental`, `test_select_respects_target_size`, `test_select_deterministic`, `test_select_without_seed_file`, `test_select_with_seed_file`
+- **Config**: `test_progressive_config_defaults`, `test_tagging_config_includes_progressive`
 
 ---
 

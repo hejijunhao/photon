@@ -291,6 +291,9 @@ pub struct TaggingConfig {
 
     /// Vocabulary configuration
     pub vocabulary: VocabularyConfig,
+
+    /// Progressive encoding settings for first-run optimization
+    pub progressive: ProgressiveConfig,
 }
 
 impl Default for TaggingConfig {
@@ -300,6 +303,36 @@ impl Default for TaggingConfig {
             min_confidence: 0.0,
             max_tags: 15,
             vocabulary: VocabularyConfig::default(),
+            progressive: ProgressiveConfig::default(),
+        }
+    }
+}
+
+/// Progressive encoding settings for first-run optimization.
+///
+/// On first run, encodes a seed set of high-value terms synchronously (~30s),
+/// then background-encodes remaining terms in chunks while images are already
+/// being processed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProgressiveConfig {
+    /// Enable progressive encoding on first run.
+    /// When false, falls back to blocking encode-all (legacy behavior).
+    pub enabled: bool,
+
+    /// Number of seed terms to encode synchronously.
+    pub seed_size: usize,
+
+    /// Number of terms per background encoding chunk.
+    pub chunk_size: usize,
+}
+
+impl Default for ProgressiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            seed_size: 2000,
+            chunk_size: 5000,
         }
     }
 }
@@ -495,5 +528,20 @@ mod tests {
         let toml = config.to_toml().unwrap();
         assert!(toml.contains("[general]"));
         assert!(toml.contains("[processing]"));
+    }
+
+    #[test]
+    fn test_progressive_config_defaults() {
+        let config = ProgressiveConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.seed_size, 2000);
+        assert_eq!(config.chunk_size, 5000);
+    }
+
+    #[test]
+    fn test_tagging_config_includes_progressive() {
+        let config = Config::default();
+        assert!(config.tagging.progressive.enabled);
+        assert_eq!(config.tagging.progressive.seed_size, 2000);
     }
 }

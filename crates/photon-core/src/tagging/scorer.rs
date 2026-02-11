@@ -33,6 +33,16 @@ impl TagScorer {
         }
     }
 
+    /// Get a reference to the label bank.
+    pub fn label_bank(&self) -> &LabelBank {
+        &self.label_bank
+    }
+
+    /// Get a reference to the vocabulary.
+    pub fn vocabulary(&self) -> &Vocabulary {
+        &self.vocabulary
+    }
+
     /// Convert cosine similarity to confidence via SigLIP's sigmoid scoring.
     ///
     /// `logit = LOGIT_SCALE * cosine + LOGIT_BIAS`, then `sigmoid(logit)`.

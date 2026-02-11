@@ -1,13 +1,15 @@
 //! Pipeline orchestration - wires together all processing stages.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use crate::config::Config;
 use crate::embedding::EmbeddingEngine;
 use crate::error::{PipelineError, Result};
 use crate::tagging::label_bank::LabelBank;
+use crate::tagging::progressive::ProgressiveEncoder;
+use crate::tagging::seed::SeedSelector;
 use crate::tagging::text_encoder::SigLipTextEncoder;
 use crate::tagging::{TagScorer, Vocabulary};
 use crate::types::ProcessedImage;
@@ -39,7 +41,7 @@ pub struct ImageProcessor {
     validator: Validator,
     discovery: FileDiscovery,
     embedding_engine: Option<Arc<EmbeddingEngine>>,
-    tag_scorer: Option<Arc<TagScorer>>,
+    tag_scorer: Option<Arc<RwLock<TagScorer>>>,
     embed_timeout_ms: u64,
 }
 
@@ -75,9 +77,12 @@ impl ImageProcessor {
 
     /// Load the tagging system (vocabulary + label bank + scorer).
     ///
-    /// On first run, this encodes all vocabulary terms through the text
-    /// encoder and caches the label bank to disk. Subsequent runs load
-    /// the cached label bank instantly.
+    /// On first run with progressive encoding enabled (default), this encodes
+    /// a seed set of ~2K high-value terms synchronously (~30s), then spawns a
+    /// background task to encode the remaining ~66K terms in chunks — swapping
+    /// in progressively larger scorers as they become available.
+    ///
+    /// On subsequent runs, loads the cached label bank instantly.
     ///
     /// Follows the same opt-in pattern as `load_embedding()`.
     pub fn load_tagging(&mut self, config: &Config) -> Result<()> {
@@ -99,35 +104,110 @@ impl ImageProcessor {
         // Load or build label bank
         let label_bank_path = taxonomy_dir.join("label_bank.bin");
         let vocab_hash = vocabulary.content_hash();
-        let label_bank = if LabelBank::exists(&label_bank_path)
+
+        if LabelBank::exists(&label_bank_path)
             && LabelBank::cache_valid(&label_bank_path, &vocab_hash)
         {
-            LabelBank::load(&label_bank_path, vocabulary.len())?
-        } else {
+            // FAST PATH: Load cached label bank (subsequent runs)
+            let label_bank = LabelBank::load(&label_bank_path, vocabulary.len())?;
+            let scorer = TagScorer::new(vocabulary, label_bank, config.tagging.clone());
+            self.tag_scorer = Some(Arc::new(RwLock::new(scorer)));
+        } else if config.tagging.progressive.enabled {
+            // PROGRESSIVE PATH: Encode seed, background-encode rest
             if LabelBank::exists(&label_bank_path) {
                 tracing::info!("Vocabulary changed — rebuilding label bank cache...");
             }
-            // First run: encode all terms
+
             if !SigLipTextEncoder::model_exists(&model_dir) {
                 tracing::warn!(
                     "Text encoder not found. Run `photon models download` to enable tagging."
                 );
                 return Ok(());
             }
-            let text_encoder = SigLipTextEncoder::new(&model_dir)?;
-            let bank = LabelBank::encode_all(&vocabulary, &text_encoder, 64)?;
+
+            // Guard: progressive encoding requires an active tokio runtime
+            if tokio::runtime::Handle::try_current().is_err() {
+                tracing::warn!(
+                    "No tokio runtime — falling back to blocking encode for tagging"
+                );
+                return self.load_tagging_blocking(config, vocabulary, &label_bank_path, &vocab_hash);
+            }
+
+            let text_encoder = Arc::new(SigLipTextEncoder::new(&model_dir)?);
+
+            let seed_path = vocab_dir.join("seed_terms.txt");
+            let seed_indices = SeedSelector::select(
+                &vocabulary,
+                &seed_path,
+                config.tagging.progressive.seed_size,
+            );
+
+            // Initialize the scorer slot with an empty scorer, then swap in the seed
+            let scorer_slot = Arc::new(RwLock::new(TagScorer::new(
+                Vocabulary::empty(),
+                LabelBank::empty(),
+                config.tagging.clone(),
+            )));
+            self.tag_scorer = Some(Arc::clone(&scorer_slot));
+
             std::fs::create_dir_all(&taxonomy_dir).map_err(|e| PipelineError::Model {
                 message: format!("Failed to create taxonomy dir {:?}: {}", taxonomy_dir, e),
             })?;
-            bank.save(&label_bank_path, &vocab_hash)?;
-            bank
-        };
 
-        self.tag_scorer = Some(Arc::new(TagScorer::new(
+            let seed_scorer = ProgressiveEncoder::start(
+                vocabulary,
+                text_encoder,
+                config.tagging.clone(),
+                Arc::clone(&scorer_slot),
+                seed_indices,
+                label_bank_path,
+                vocab_hash,
+                config.tagging.progressive.chunk_size,
+            )?;
+
+            // Install the seed scorer
+            {
+                let mut lock = scorer_slot.write().unwrap();
+                *lock = seed_scorer;
+            }
+        } else {
+            // BLOCKING PATH (legacy): Encode all terms synchronously
+            return self.load_tagging_blocking(config, vocabulary, &label_bank_path, &vocab_hash);
+        }
+
+        Ok(())
+    }
+
+    /// Blocking fallback for load_tagging — encodes all terms synchronously.
+    fn load_tagging_blocking(
+        &mut self,
+        config: &Config,
+        vocabulary: Vocabulary,
+        label_bank_path: &Path,
+        vocab_hash: &str,
+    ) -> Result<()> {
+        let model_dir = config.model_dir();
+        let taxonomy_dir = config.taxonomy_dir();
+
+        if !SigLipTextEncoder::model_exists(&model_dir) {
+            tracing::warn!(
+                "Text encoder not found. Run `photon models download` to enable tagging."
+            );
+            return Ok(());
+        }
+
+        let text_encoder = SigLipTextEncoder::new(&model_dir)?;
+        let bank = LabelBank::encode_all(&vocabulary, &text_encoder, 64)?;
+        std::fs::create_dir_all(&taxonomy_dir).map_err(|e| PipelineError::Model {
+            message: format!("Failed to create taxonomy dir {:?}: {}", taxonomy_dir, e),
+        })?;
+        bank.save(label_bank_path, vocab_hash)?;
+
+        self.tag_scorer = Some(Arc::new(RwLock::new(TagScorer::new(
             vocabulary,
-            label_bank,
+            bank,
             config.tagging.clone(),
-        )));
+        ))));
         Ok(())
     }
 
@@ -245,7 +325,10 @@ impl ImageProcessor {
         let tag_start = std::time::Instant::now();
         let tags = if !options.skip_tagging {
             match (&self.tag_scorer, &embedding) {
-                (Some(scorer), emb) if !emb.is_empty() => scorer.score(emb),
+                (Some(scorer_lock), emb) if !emb.is_empty() => {
+                    let scorer = scorer_lock.read().unwrap();
+                    scorer.score(emb)
+                }
                 _ => vec![],
             }
         } else {

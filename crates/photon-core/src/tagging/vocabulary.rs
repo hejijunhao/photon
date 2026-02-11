@@ -131,6 +131,33 @@ impl Vocabulary {
         self.by_name.get(name).map(|&i| &self.terms[i])
     }
 
+    /// Create an empty vocabulary (placeholder for progressive encoding initialization).
+    pub fn empty() -> Self {
+        Self {
+            terms: vec![],
+            by_name: HashMap::new(),
+        }
+    }
+
+    /// Create a sub-vocabulary containing only the terms at the given indices.
+    ///
+    /// Preserves term order as given in `indices`. Rebuilds the `by_name` index
+    /// for the subset so lookups work correctly on the smaller vocabulary.
+    pub fn subset(&self, indices: &[usize]) -> Self {
+        let terms: Vec<VocabTerm> = indices
+            .iter()
+            .filter_map(|&i| self.terms.get(i).cloned())
+            .collect();
+
+        let by_name: HashMap<String, usize> = terms
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.name.clone(), i))
+            .collect();
+
+        Self { terms, by_name }
+    }
+
     /// Compute a BLAKE3 hash of all term names in order.
     ///
     /// Used for label bank cache invalidation — if the vocabulary changes,
@@ -142,5 +169,94 @@ impl Vocabulary {
             hasher.update(b"\n");
         }
         hasher.finalize().to_hex().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn vocab_from_terms(wordnet: &[(&str, &str)], supplemental: &[(&str, &str)]) -> Vocabulary {
+        let dir = tempfile::tempdir().unwrap();
+
+        let nouns_path = dir.path().join("wordnet_nouns.txt");
+        let mut f = std::fs::File::create(&nouns_path).unwrap();
+        writeln!(f, "# Test").unwrap();
+        for (name, hyp) in wordnet {
+            writeln!(f, "{}\t00000000\t{}", name, hyp).unwrap();
+        }
+
+        let supp_path = dir.path().join("supplemental.txt");
+        let mut f = std::fs::File::create(&supp_path).unwrap();
+        writeln!(f, "# Test").unwrap();
+        for (name, cat) in supplemental {
+            writeln!(f, "{}\t{}", name, cat).unwrap();
+        }
+
+        Vocabulary::load(dir.path()).unwrap()
+    }
+
+    #[test]
+    fn test_empty_vocabulary() {
+        let vocab = Vocabulary::empty();
+        assert!(vocab.is_empty());
+        assert_eq!(vocab.len(), 0);
+        assert!(vocab.all_terms().is_empty());
+        assert!(vocab.get("anything").is_none());
+    }
+
+    #[test]
+    fn test_subset_preserves_terms() {
+        let vocab = vocab_from_terms(
+            &[("dog", "animal"), ("cat", "animal"), ("car", "vehicle"),
+              ("tree", "plant"), ("fish", "animal")],
+            &[],
+        );
+
+        let sub = vocab.subset(&[0, 2, 4]);
+        assert_eq!(sub.len(), 3);
+        assert_eq!(sub.all_terms()[0].name, "dog");
+        assert_eq!(sub.all_terms()[1].name, "car");
+        assert_eq!(sub.all_terms()[2].name, "fish");
+    }
+
+    #[test]
+    fn test_subset_empty() {
+        let vocab = vocab_from_terms(
+            &[("dog", "animal"), ("cat", "animal")],
+            &[],
+        );
+
+        let sub = vocab.subset(&[]);
+        assert!(sub.is_empty());
+        assert_eq!(sub.len(), 0);
+    }
+
+    #[test]
+    fn test_subset_rebuilds_index() {
+        let vocab = vocab_from_terms(
+            &[("dog", "animal"), ("cat", "animal"), ("car", "vehicle")],
+            &[],
+        );
+
+        let sub = vocab.subset(&[1, 2]); // cat, car
+        assert!(sub.get("cat").is_some());
+        assert!(sub.get("car").is_some());
+        assert!(sub.get("dog").is_none()); // not in subset
+        // Verify index points to correct position in the SUBSET
+        assert_eq!(sub.get("cat").unwrap().name, "cat");
+        assert_eq!(sub.get("car").unwrap().name, "car");
+    }
+
+    #[test]
+    fn test_subset_preserves_hypernyms() {
+        let vocab = vocab_from_terms(
+            &[("dog", "animal|organism|entity")],
+            &[],
+        );
+
+        let sub = vocab.subset(&[0]);
+        assert_eq!(sub.all_terms()[0].hypernyms, vec!["animal", "organism", "entity"]);
     }
 }
