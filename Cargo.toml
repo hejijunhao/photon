@@ -30,6 +30,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
 
+# Async traits (object-safe async fn in trait for Box<dyn LlmProvider>)
+async-trait = "0.1"
+
 # Utilities
 directories = "5"
 shellexpand = "3"

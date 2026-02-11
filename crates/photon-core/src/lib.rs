@@ -34,6 +34,7 @@
 pub mod config;
 pub mod embedding;
 pub mod error;
+pub mod llm;
 pub mod math;
 pub mod output;
 pub mod pipeline;
@@ -46,7 +47,7 @@ pub use embedding::EmbeddingEngine;
 pub use error::{ConfigError, PhotonError, PipelineError, PipelineResult, Result};
 pub use output::{OutputFormat, OutputWriter};
 pub use pipeline::{ImageProcessor, ProcessOptions};
-pub use types::{ExifData, ProcessedImage, ProcessingStats, Tag};
+pub use types::{EnrichmentPatch, ExifData, OutputRecord, ProcessedImage, ProcessingStats, Tag};
 
 /// Library version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

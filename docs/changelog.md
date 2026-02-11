@@ -6,12 +6,63 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.0](#040---2026-02-11)** — LLM integration: BYOK description enrichment with dual-stream output (Ollama, Anthropic, OpenAI, Hyperbolic)
 - **[0.3.3](#033---2026-02-10)** — Pre-Phase 5 cleanup: clippy fixes, streaming downloads, cache invalidation, dead code removal
 - **[0.3.2](#032---2026-02-09)** — Zero-shot tagging: 68K-term vocabulary, SigLIP text encoder, label bank caching
 - **[0.3.1](#031---2026-02-09)** — Text encoder alignment spike: cross-modal verification, scoring parameter derivation
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.0] - 2026-02-11
+
+### Summary
+
+BYOK (Bring Your Own Key) LLM integration for AI-generated image descriptions. Supports four providers: Ollama (local), Anthropic, OpenAI, and Hyperbolic. Uses a **dual-stream output** model — core pipeline results emit immediately at full speed, then LLM descriptions follow as enrichment patches. Without `--llm`, output is identical to pre-Phase-5 (backward compatible).
+
+### Added
+
+- **LLM provider abstraction** — `LlmProvider` async trait with `#[async_trait]` for object-safe dynamic dispatch across providers at runtime
+- **Ollama provider** — POST to `/api/generate` with base64 images, no auth, 120s default timeout for local vision models
+- **Anthropic provider** — Messages API with `x-api-key` + `anthropic-version` headers, base64 image content blocks, token usage tracking
+- **OpenAI provider** — Chat Completions with `Authorization: Bearer` header, data URL image content, custom endpoint support
+- **Hyperbolic provider** — thin wrapper over `OpenAiProvider` with custom endpoint (`{config.endpoint}/chat/completions`)
+- **`LlmProviderFactory`** — creates `Box<dyn LlmProvider>` from provider name + config, with `${ENV_VAR}` expansion for API keys
+- **Enricher** — concurrent LLM orchestration engine using `tokio::Semaphore` for bounded parallelism (capped at 8), retry loop with exponential backoff, per-request timeouts
+- **Retry logic** — classifies timeouts, HTTP 429, and 5xx as retryable; exponential backoff (1s, 2s, 4s, 8s…) capped at 30s
+- **Tag-aware prompts** — `LlmRequest::describe_image()` includes Phase 4 zero-shot tags for more focused LLM descriptions
+- **`EnrichmentPatch`** struct — content_hash, description, llm_model, llm_latency_ms, llm_tokens
+- **`OutputRecord`** enum — internally tagged (`"type":"core"` / `"type":"enrichment"`) for dual-stream JSONL consumers
+- **Dual-stream CLI output** — `process.rs` emits `OutputRecord::Core` records immediately, then `OutputRecord::Enrichment` patches as LLM calls complete
+
+### Changed
+
+- **`process.rs` `execute()`** rewritten for dual-stream output when `--llm` is active; backward compatible without `--llm`
+- **`lib.rs`** — added `pub mod llm`, re-exported `EnrichmentPatch` and `OutputRecord`
+
+### Pipeline Stages
+
+```
+Validate → Decode → EXIF → Hash → Thumbnail → Embed (SigLIP) → Tag (SigLIP) → JSON
+                                                                                  ↓
+                                                                         Enricher (LLM) → Enrichment JSONL
+```
+
+### Dependencies
+
+- `async-trait` 0.1 (new) — object-safe async trait for `Box<dyn LlmProvider>`
+- `reqwest` now also in photon-core (was CLI-only)
+- `futures-util` now also in photon-core
+
+### Tests
+
+48 tests passing (+16 new over 0.3.3 baseline of 32):
+
+- **provider.rs** (6): JPEG/PNG MIME detection, base64 encoding, data URL format, prompt generation with/without tags, `${ENV_VAR}` expansion
+- **retry.rs** (5): timeout/429/5xx retryable, 401 not retryable, exponential backoff with 30s cap
+- **types.rs** (3): core/enrichment serde roundtrips, optional `llm_tokens` skipped when `None`
 
 ---
 
@@ -252,6 +303,8 @@ crates/
 
 ---
 
+[0.4.0]: https://github.com/crimsonsun/photon/compare/v0.3.3...v0.4.0
+[0.3.3]: https://github.com/crimsonsun/photon/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/crimsonsun/photon/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/crimsonsun/photon/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/crimsonsun/photon/compare/v0.2.0...v0.3.0

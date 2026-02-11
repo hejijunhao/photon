@@ -39,3 +39,8 @@ ndarray = "0.16"
 
 # Tagging / Text encoder (Phase 4)
 tokenizers = "0.20"
+
+# LLM integration (Phase 5)
+async-trait.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true

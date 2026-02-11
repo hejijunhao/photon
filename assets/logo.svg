@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Background -->
+  <circle cx="256" cy="256" r="250" fill="#0A0A0A"/>
+
+  <!-- Rays -->
+  <g transform="translate(256,256)">
+    <!-- Primary rays (longer, bolder) -->
+    <rect x="-4" y="-210" width="8" height="120" fill="#FFFFFF" transform="rotate(0)"/>
+    <rect x="-4" y="-210" width="8" height="120" fill="#FFFFFF" transform="rotate(45)"/>
+    <rect x="-4" y="-210" width="8" height="120" fill="#FFFFFF" transform="rotate(90)"/>
+    <rect x="-4" y="-210" width="8" height="120" fill="#FFFFFF" transform="rotate(135)"/>
+    <rect x="-4" y="-210" width="8" height="120" fill="#FFFFFF" transform="rotate(180)"/>
+    <rect x="-4" y="-210" width="8" height="120" fill="#FFFFFF" transform="rotate(225)"/>
+    <rect x="-4" y="-210" width="8" height="120" fill="#FFFFFF" transform="rotate(270)"/>
+    <rect x="-4" y="-210" width="8" height="120" fill="#FFFFFF" transform="rotate(315)"/>
+
+    <!-- Secondary rays (shorter, thinner, between primaries) -->
+    <rect x="-3" y="-170" width="6" height="80" fill="#888888" transform="rotate(22.5)"/>
+    <rect x="-3" y="-170" width="6" height="80" fill="#888888" transform="rotate(67.5)"/>
+    <rect x="-3" y="-170" width="6" height="80" fill="#888888" transform="rotate(112.5)"/>
+    <rect x="-3" y="-170" width="6" height="80" fill="#888888" transform="rotate(157.5)"/>
+    <rect x="-3" y="-170" width="6" height="80" fill="#888888" transform="rotate(202.5)"/>
+    <rect x="-3" y="-170" width="6" height="80" fill="#888888" transform="rotate(247.5)"/>
+    <rect x="-3" y="-170" width="6" height="80" fill="#888888" transform="rotate(292.5)"/>
+    <rect x="-3" y="-170" width="6" height="80" fill="#888888" transform="rotate(337.5)"/>
+  </g>
+
+  <!-- Core circle -->
+  <circle cx="256" cy="256" r="55" fill="#FFFFFF"/>
+</svg>

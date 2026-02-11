@@ -143,6 +143,27 @@ impl Tag {
     }
 }
 
+/// Lightweight patch emitted by the LLM enrichment pass.
+/// Keyed by content_hash so the consumer can join with the core record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrichmentPatch {
+    pub content_hash: String,
+    pub description: String,
+    pub llm_model: String,
+    pub llm_latency_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_tokens: Option<u32>,
+}
+
+/// Tagged union for dual-stream output when --llm is enabled.
+/// Internally tagged: `{"type":"core",...}` or `{"type":"enrichment",...}`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum OutputRecord {
+    Core(Box<ProcessedImage>),
+    Enrichment(EnrichmentPatch),
+}
+
 /// Processing statistics for a batch run.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProcessingStats {
@@ -160,4 +181,87 @@ pub struct ProcessingStats {
 
     /// Total processing time in seconds
     pub total_seconds: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn sample_processed_image() -> ProcessedImage {
+        ProcessedImage {
+            file_path: PathBuf::from("/photos/beach.jpg"),
+            file_name: "beach.jpg".to_string(),
+            content_hash: "abc123".to_string(),
+            width: 1920,
+            height: 1080,
+            format: "jpeg".to_string(),
+            file_size: 2048,
+            embedding: vec![0.1, 0.2, 0.3],
+            exif: None,
+            tags: vec![Tag::new("beach", 0.95)],
+            description: None,
+            thumbnail: None,
+            perceptual_hash: None,
+        }
+    }
+
+    #[test]
+    fn test_output_record_core_roundtrip() {
+        let record = OutputRecord::Core(Box::new(sample_processed_image()));
+        let json = serde_json::to_string(&record).unwrap();
+
+        // Verify the "type" field is present
+        assert!(json.contains("\"type\":\"core\""));
+        assert!(json.contains("\"content_hash\":\"abc123\""));
+
+        // Roundtrip
+        let parsed: OutputRecord = serde_json::from_str(&json).unwrap();
+        match parsed {
+            OutputRecord::Core(img) => {
+                assert_eq!(img.content_hash, "abc123");
+                assert_eq!(img.file_name, "beach.jpg");
+            }
+            _ => panic!("Expected Core variant"),
+        }
+    }
+
+    #[test]
+    fn test_output_record_enrichment_roundtrip() {
+        let patch = EnrichmentPatch {
+            content_hash: "abc123".to_string(),
+            description: "A sandy tropical beach".to_string(),
+            llm_model: "claude-sonnet-4-5-20250929".to_string(),
+            llm_latency_ms: 2100,
+            llm_tokens: Some(150),
+        };
+        let record = OutputRecord::Enrichment(patch);
+        let json = serde_json::to_string(&record).unwrap();
+
+        assert!(json.contains("\"type\":\"enrichment\""));
+        assert!(json.contains("\"description\":\"A sandy tropical beach\""));
+        assert!(json.contains("\"llm_tokens\":150"));
+
+        let parsed: OutputRecord = serde_json::from_str(&json).unwrap();
+        match parsed {
+            OutputRecord::Enrichment(p) => {
+                assert_eq!(p.content_hash, "abc123");
+                assert_eq!(p.llm_latency_ms, 2100);
+            }
+            _ => panic!("Expected Enrichment variant"),
+        }
+    }
+
+    #[test]
+    fn test_enrichment_patch_skips_none_tokens() {
+        let patch = EnrichmentPatch {
+            content_hash: "def456".to_string(),
+            description: "A dog".to_string(),
+            llm_model: "gpt-4o-mini".to_string(),
+            llm_latency_ms: 800,
+            llm_tokens: None,
+        };
+        let json = serde_json::to_string(&patch).unwrap();
+        assert!(!json.contains("llm_tokens"));
+    }
 }

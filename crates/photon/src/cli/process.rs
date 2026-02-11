@@ -114,7 +114,9 @@ impl std::fmt::Display for LlmProvider {
 /// Execute the process command.
 pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
     use photon_core::embedding::EmbeddingEngine;
+    use photon_core::llm::EnrichResult;
     use photon_core::output::OutputFormat as CoreOutputFormat;
+    use photon_core::types::OutputRecord;
     use photon_core::{Config, ImageProcessor, OutputWriter, ProcessOptions};
     use std::fs::File;
     use std::io::BufWriter;
@@ -194,6 +196,9 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
         skip_tagging: args.no_tagging || !processor.has_tagging(),
     };
 
+    // Determine if LLM enrichment is enabled
+    let llm_enabled = args.llm.is_some() && !args.no_description;
+
     // Discover files
     let files = processor.discover(&args.input);
 
@@ -210,30 +215,92 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
         OutputFormat::Jsonl => CoreOutputFormat::JsonLines,
     };
 
-    // Process and output
+    // ── Phase 1: Core pipeline (fast, unchanged) ──
+
     if args.input.is_file() {
-        // Single file - output to stdout or file
+        // Single file processing
         let result = processor
             .process_with_options(&args.input, &options)
             .await?;
 
-        if let Some(ref output_path) = args.output {
-            let file = File::create(output_path)?;
-            let mut writer = OutputWriter::new(BufWriter::new(file), output_format, true);
-            writer.write(&result)?;
-            writer.flush()?;
-            tracing::info!("Output written to {:?}", output_path);
+        if llm_enabled {
+            // Dual-stream: emit core record, then enrich
+            let core_record = OutputRecord::Core(Box::new(result.clone()));
+
+            if let Some(ref output_path) = args.output {
+                let file = File::create(output_path)?;
+                let mut writer = OutputWriter::new(BufWriter::new(file), output_format, false);
+                writer.write(&core_record)?;
+
+                // Run enrichment for single file
+                if let Some(enricher) = create_enricher(&args, &config)? {
+                    let results_vec = vec![result];
+                    let (file_writer_tx, file_writer_rx) =
+                        std::sync::mpsc::channel::<OutputRecord>();
+
+                    let enricher_handle = {
+                        let tx = file_writer_tx;
+                        tokio::spawn(async move {
+                            enricher
+                                .enrich_batch(&results_vec, move |enrich_result| {
+                                    if let EnrichResult::Success(patch) = enrich_result {
+                                        let _ = tx.send(OutputRecord::Enrichment(patch));
+                                    }
+                                })
+                                .await
+                        })
+                    };
+
+                    let (enriched, enrich_failed) = enricher_handle.await?;
+                    for record in file_writer_rx.try_iter() {
+                        writer.write(&record)?;
+                    }
+                    writer.flush()?;
+                    tracing::info!("Output written to {:?}", output_path);
+                    log_enrichment_stats(enriched, enrich_failed);
+                } else {
+                    writer.flush()?;
+                    tracing::info!("Output written to {:?}", output_path);
+                }
+            } else {
+                // Stdout
+                println!("{}", serde_json::to_string_pretty(&core_record)?);
+
+                if let Some(enricher) = create_enricher(&args, &config)? {
+                    let results_vec = vec![result];
+                    enricher
+                        .enrich_batch(&results_vec, |enrich_result| match enrich_result {
+                            EnrichResult::Success(patch) => {
+                                let record = OutputRecord::Enrichment(patch);
+                                if let Ok(json) = serde_json::to_string_pretty(&record) {
+                                    println!("{json}");
+                                }
+                            }
+                            EnrichResult::Failure(path, msg) => {
+                                tracing::error!("Enrichment failed: {path:?} - {msg}");
+                            }
+                        })
+                        .await;
+                }
+            }
         } else {
-            let json = serde_json::to_string_pretty(&result)?;
-            println!("{}", json);
+            // No LLM — backward compatible plain ProcessedImage output
+            if let Some(ref output_path) = args.output {
+                let file = File::create(output_path)?;
+                let mut writer = OutputWriter::new(BufWriter::new(file), output_format, true);
+                writer.write(&result)?;
+                writer.flush()?;
+                tracing::info!("Output written to {:?}", output_path);
+            } else {
+                let json = serde_json::to_string_pretty(&result)?;
+                println!("{}", json);
+            }
         }
     } else {
         // Batch processing
         let mut succeeded = 0;
         let mut failed = 0;
         let start_time = std::time::Instant::now();
-
-        // Prepare output
         let mut results = Vec::new();
 
         for file in &files {
@@ -241,9 +308,19 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
                 Ok(result) => {
                     succeeded += 1;
                     if matches!(args.format, OutputFormat::Jsonl) && args.output.is_none() {
-                        // Stream JSONL to stdout immediately
-                        println!("{}", serde_json::to_string(&result)?);
-                    } else {
+                        // Stream to stdout immediately
+                        if llm_enabled {
+                            let record = OutputRecord::Core(Box::new(result.clone()));
+                            println!("{}", serde_json::to_string(&record)?);
+                        } else {
+                            println!("{}", serde_json::to_string(&result)?);
+                        }
+                    }
+                    // Always collect for LLM enrichment; also for file/JSON output
+                    if llm_enabled
+                        || args.output.is_some()
+                        || matches!(args.format, OutputFormat::Json)
+                    {
                         results.push(result);
                     }
                 }
@@ -254,22 +331,87 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
             }
         }
 
-        // Output batch results
-        if !results.is_empty() {
-            if let Some(ref output_path) = args.output {
-                let file = File::create(output_path)?;
-                let mut writer = OutputWriter::new(BufWriter::new(file), output_format, false);
-                if matches!(args.format, OutputFormat::Json) {
-                    writer.write_all(&results)?;
-                } else {
-                    for result in &results {
-                        writer.write(result)?;
-                    }
+        // Write batch results to file (core records)
+        if !results.is_empty() && args.output.is_some() {
+            let output_path = args.output.as_ref().unwrap();
+            let file = File::create(output_path)?;
+            let mut writer = OutputWriter::new(BufWriter::new(file), output_format, false);
+
+            if llm_enabled {
+                // Wrap in OutputRecord::Core
+                for result in &results {
+                    writer.write(&OutputRecord::Core(Box::new(result.clone())))?;
                 }
-                writer.flush()?;
-                tracing::info!("Output written to {:?}", output_path);
             } else if matches!(args.format, OutputFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&results)?);
+                writer.write_all(&results)?;
+            } else {
+                for result in &results {
+                    writer.write(result)?;
+                }
+            }
+
+            // ── Phase 2: LLM enrichment (only if --llm) ──
+            if llm_enabled {
+                if let Some(enricher) = create_enricher(&args, &config)? {
+                    tracing::info!("Starting LLM enrichment for {} images...", results.len());
+
+                    let (file_writer_tx, file_writer_rx) =
+                        std::sync::mpsc::channel::<OutputRecord>();
+
+                    let enricher_handle = {
+                        let tx = file_writer_tx;
+                        let results_clone = results.clone();
+                        tokio::spawn(async move {
+                            enricher
+                                .enrich_batch(&results_clone, move |enrich_result| match enrich_result {
+                                    EnrichResult::Success(patch) => {
+                                        let _ = tx.send(OutputRecord::Enrichment(patch));
+                                    }
+                                    EnrichResult::Failure(path, msg) => {
+                                        tracing::error!("Enrichment failed: {path:?} - {msg}");
+                                    }
+                                })
+                                .await
+                        })
+                    };
+
+                    let (enriched, enrich_failed) = enricher_handle.await?;
+                    for record in file_writer_rx.try_iter() {
+                        writer.write(&record)?;
+                    }
+                    log_enrichment_stats(enriched, enrich_failed);
+                }
+            }
+
+            writer.flush()?;
+            tracing::info!("Output written to {:?}", output_path);
+        } else if !results.is_empty()
+            && args.output.is_none()
+            && !llm_enabled
+            && matches!(args.format, OutputFormat::Json)
+        {
+            // JSON array to stdout (non-LLM batch)
+            println!("{}", serde_json::to_string_pretty(&results)?);
+        }
+
+        // LLM enrichment for stdout streaming (JSONL only)
+        if llm_enabled && args.output.is_none() {
+            if let Some(enricher) = create_enricher(&args, &config)? {
+                tracing::info!("Starting LLM enrichment for {} images...", results.len());
+
+                enricher
+                    .enrich_batch(&results, |enrich_result| match enrich_result {
+                        EnrichResult::Success(patch) => {
+                            let record = OutputRecord::Enrichment(patch);
+                            if let Ok(json) = serde_json::to_string(&record) {
+                                println!("{json}");
+                            }
+                        }
+                        EnrichResult::Failure(path, msg) => {
+                            tracing::error!("Enrichment failed: {path:?} - {msg}");
+                        }
+                    })
+                    .await;
             }
         }
 
@@ -289,4 +431,44 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Create an LLM enricher from CLI args and config, if --llm was specified.
+fn create_enricher(
+    args: &ProcessArgs,
+    config: &photon_core::Config,
+) -> anyhow::Result<Option<photon_core::llm::Enricher>> {
+    use photon_core::llm::{EnrichOptions, Enricher, LlmProviderFactory};
+
+    let provider_name = match &args.llm {
+        Some(p) => p.to_string(),
+        None => return Ok(None),
+    };
+
+    let provider = LlmProviderFactory::create(
+        &provider_name,
+        &config.llm,
+        args.llm_model.as_deref(),
+    )?;
+
+    let options = EnrichOptions {
+        parallel: args.parallel.min(8), // Cap LLM concurrency
+        timeout_ms: config.limits.llm_timeout_ms,
+        retry_attempts: config.pipeline.retry_attempts,
+        retry_delay_ms: config.pipeline.retry_delay_ms,
+    };
+
+    Ok(Some(Enricher::new(provider, options)))
+}
+
+fn log_enrichment_stats(succeeded: usize, failed: usize) {
+    if failed > 0 {
+        tracing::warn!(
+            "LLM enrichment: {} succeeded, {} failed",
+            succeeded,
+            failed
+        );
+    } else {
+        tracing::info!("LLM enrichment: {} succeeded", succeeded);
+    }
 }
