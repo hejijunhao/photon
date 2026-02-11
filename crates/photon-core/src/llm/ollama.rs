@@ -56,7 +56,13 @@ impl LlmProvider for OllamaProvider {
 
     async fn is_available(&self) -> bool {
         let url = format!("{}/api/tags", self.endpoint);
-        match self.client.get(&url).timeout(Duration::from_secs(5)).send().await {
+        match self
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+        {
             Ok(resp) => resp.status().is_success(),
             Err(_) => false,
         }
@@ -98,11 +104,10 @@ impl LlmProvider for OllamaProvider {
             });
         }
 
-        let ollama_resp: OllamaResponse =
-            resp.json().await.map_err(|e| PipelineError::Llm {
-                message: format!("Failed to parse Ollama response: {e}"),
-                status_code: None,
-            })?;
+        let ollama_resp: OllamaResponse = resp.json().await.map_err(|e| PipelineError::Llm {
+            message: format!("Failed to parse Ollama response: {e}"),
+            status_code: None,
+        })?;
 
         let text = ollama_resp.response.trim().to_string();
         if text.is_empty() {

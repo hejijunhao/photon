@@ -151,7 +151,9 @@ impl RelevanceTracker {
     /// Check if warm-pool scoring should happen this image.
     pub fn should_check_warm(&self) -> bool {
         self.config.warm_check_interval > 0
-            && self.images_processed.is_multiple_of(self.config.warm_check_interval)
+            && self
+                .images_processed
+                .is_multiple_of(self.config.warm_check_interval)
     }
 
     /// Run pool transition sweep. Returns indices of terms newly promoted
@@ -169,8 +171,7 @@ impl RelevanceTracker {
             match stat.pool {
                 Pool::Active => {
                     // Demote if no hits in N days
-                    if stat.last_hit_ts > 0
-                        && now.saturating_sub(stat.last_hit_ts) > demotion_secs
+                    if stat.last_hit_ts > 0 && now.saturating_sub(stat.last_hit_ts) > demotion_secs
                     {
                         stat.pool = Pool::Warm;
                     }
@@ -630,7 +631,7 @@ mod tests {
         let loaded = RelevanceTracker::load(&save_path, &vocab2, default_config()).unwrap();
         // cat kept its stats
         assert_eq!(loaded.stats[0].hit_count, 0); // cat was index 1 originally, 0 now
-        // fish is new → cold
+                                                  // fish is new → cold
         assert_eq!(loaded.stats[1].hit_count, 0);
         assert_eq!(loaded.pool(1), Pool::Cold);
     }

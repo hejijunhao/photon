@@ -162,9 +162,7 @@ impl LlmProvider for AnthropicProvider {
         Ok(LlmResponse {
             text,
             model: messages_resp.model,
-            tokens_used: Some(
-                messages_resp.usage.input_tokens + messages_resp.usage.output_tokens,
-            ),
+            tokens_used: Some(messages_resp.usage.input_tokens + messages_resp.usage.output_tokens),
             latency_ms: start.elapsed().as_millis() as u64,
         })
     }

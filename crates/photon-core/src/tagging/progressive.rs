@@ -138,11 +138,8 @@ impl ProgressiveEncoder {
             // Note: subset() preserves the order given in encoded_indices,
             // which matches the running_bank's row order.
             let combined_vocab = ctx.full_vocabulary.subset(&encoded_indices);
-            let new_scorer = TagScorer::new(
-                combined_vocab,
-                running_bank.clone(),
-                ctx.config.clone(),
-            );
+            let new_scorer =
+                TagScorer::new(combined_vocab, running_bank.clone(), ctx.config.clone());
 
             // Atomic swap — write lock held only for the duration of a field swap
             {

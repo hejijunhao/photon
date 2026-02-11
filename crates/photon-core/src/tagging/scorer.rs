@@ -6,6 +6,7 @@
 use crate::config::TaggingConfig;
 use crate::types::Tag;
 
+use super::hierarchy::HierarchyDedup;
 use super::label_bank::LabelBank;
 use super::relevance::{Pool, RelevanceTracker};
 use super::vocabulary::Vocabulary;
@@ -66,12 +67,26 @@ impl TagScorer {
                     name: term.display_name.clone(),
                     confidence,
                     category: term.category.clone(),
+                    path: None,
                 }
             })
             .collect();
 
         tags.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
         tags.truncate(self.config.max_tags);
+
+        // Phase 4e: Hierarchy deduplication
+        let mut tags = if self.config.deduplicate_ancestors {
+            HierarchyDedup::deduplicate(&tags, &self.vocabulary)
+        } else {
+            tags
+        };
+
+        // Phase 4e: Path annotation
+        if self.config.show_paths {
+            HierarchyDedup::add_paths(&mut tags, &self.vocabulary, self.config.path_max_depth);
+        }
+
         tags
     }
 
@@ -257,12 +272,12 @@ mod tests {
         let mut tracker = RelevanceTracker::new(3, &mask, config);
         // Set term 0 Active, term 1 Warm, term 2 stays Active
         tracker.promote_to_warm(&[]); // no-op, just using the tracker
-        // Manually adjust: we need to access stats via record_hits approach
-        // Instead, create with correct initial state:
-        // All start Active since encoded_mask is all true
-        // Override term 1 to Warm by going through a sweep path isn't easy
-        // So let's just test that score_pool returns only active terms
-        // when all are active
+                                      // Manually adjust: we need to access stats via record_hits approach
+                                      // Instead, create with correct initial state:
+                                      // All start Active since encoded_mask is all true
+                                      // Override term 1 to Warm by going through a sweep path isn't easy
+                                      // So let's just test that score_pool returns only active terms
+                                      // when all are active
         let active_hits = scorer.score_pool(&image_emb, &tracker, Pool::Active);
         assert_eq!(active_hits.len(), 3); // All active
 

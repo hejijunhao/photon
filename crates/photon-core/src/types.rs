@@ -117,6 +117,10 @@ pub struct Tag {
     /// Optional category ("object", "scene", "color", "style", etc.)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+
+    /// Optional hierarchy path (e.g., "animal > dog > labrador retriever")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 impl Tag {
@@ -126,6 +130,7 @@ impl Tag {
             name: name.into(),
             confidence,
             category: None,
+            path: None,
         }
     }
 
@@ -139,6 +144,7 @@ impl Tag {
             name: name.into(),
             confidence,
             category: Some(category.into()),
+            path: None,
         }
     }
 }
@@ -250,6 +256,28 @@ mod tests {
             }
             _ => panic!("Expected Enrichment variant"),
         }
+    }
+
+    #[test]
+    fn test_tag_serde_without_path() {
+        let tag = Tag::new("beach", 0.95);
+        let json = serde_json::to_string(&tag).unwrap();
+        assert!(!json.contains("path"));
+        let parsed: Tag = serde_json::from_str(&json).unwrap();
+        assert!(parsed.path.is_none());
+    }
+
+    #[test]
+    fn test_tag_serde_with_path() {
+        let mut tag = Tag::new("labrador retriever", 0.87);
+        tag.path = Some("animal > dog > labrador retriever".to_string());
+        let json = serde_json::to_string(&tag).unwrap();
+        assert!(json.contains("\"path\":\"animal > dog > labrador retriever\""));
+        let parsed: Tag = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.path.as_deref(),
+            Some("animal > dog > labrador retriever")
+        );
     }
 
     #[test]

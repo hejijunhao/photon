@@ -3,6 +3,7 @@
 //! Scores images against a vocabulary of terms by computing dot products
 //! between image embeddings and pre-computed text embeddings.
 
+pub mod hierarchy;
 pub mod label_bank;
 pub mod neighbors;
 pub mod progressive;

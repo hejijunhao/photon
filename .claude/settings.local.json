@@ -17,7 +17,9 @@
       "Bash(cargo clippy:*)",
       "Bash(cargo fmt:*)",
       "Bash(git push:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(cd:*)",
+      "Bash(echo:*)"
     ]
   }
 }

@@ -63,11 +63,7 @@ impl Enricher {
     /// JSONL lines in real time.
     ///
     /// Returns `(succeeded, failed)` counts.
-    pub async fn enrich_batch<F>(
-        &self,
-        images: &[ProcessedImage],
-        on_result: F,
-    ) -> (usize, usize)
+    pub async fn enrich_batch<F>(&self, images: &[ProcessedImage], on_result: F) -> (usize, usize)
     where
         F: Fn(EnrichResult) + Send + Sync + 'static,
     {
@@ -88,8 +84,7 @@ impl Enricher {
             let image = image.clone();
 
             let handle = tokio::spawn(async move {
-                let result =
-                    enrich_single(&provider, &image, &options).await;
+                let result = enrich_single(&provider, &image, &options).await;
                 let success = matches!(&result, EnrichResult::Success(_));
                 on_result(result);
                 drop(permit);

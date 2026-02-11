@@ -61,9 +61,7 @@ impl SeedSelector {
             // Same vocabulary always produces the same seed set.
             let hash = vocabulary.content_hash();
             let hash_bytes = hash.as_bytes();
-            let seed_value = u64::from_le_bytes(
-                hash_bytes[..8].try_into().unwrap_or([0u8; 8]),
-            );
+            let seed_value = u64::from_le_bytes(hash_bytes[..8].try_into().unwrap_or([0u8; 8]));
             let mut rng = rand::rngs::StdRng::seed_from_u64(seed_value);
 
             unselected.shuffle(&mut rng);
@@ -92,10 +90,7 @@ mod tests {
     use std::io::Write;
 
     /// Helper to create a vocabulary from term specs via temp files.
-    fn vocab_from_terms(
-        wordnet: &[(&str, &str)],
-        supplemental: &[(&str, &str)],
-    ) -> Vocabulary {
+    fn vocab_from_terms(wordnet: &[(&str, &str)], supplemental: &[(&str, &str)]) -> Vocabulary {
         let dir = tempfile::tempdir().unwrap();
 
         let nouns_path = dir.path().join("wordnet_nouns.txt");
@@ -126,20 +121,36 @@ mod tests {
 
         // Supplemental terms are at indices 3 and 4 (after the 3 WordNet terms)
         assert!(result.contains(&3), "Should include 'beach' (supplemental)");
-        assert!(result.contains(&4), "Should include 'sunset' (supplemental)");
+        assert!(
+            result.contains(&4),
+            "Should include 'sunset' (supplemental)"
+        );
     }
 
     #[test]
     fn test_select_respects_target_size() {
         // Create 20 unique WordNet terms
         let wordnet: Vec<(&str, &str)> = vec![
-            ("dog", "animal"), ("cat", "animal"), ("car", "vehicle"),
-            ("tree", "plant"), ("fish", "animal"), ("bird", "animal"),
-            ("boat", "vehicle"), ("hat", "clothing"), ("cup", "container"),
-            ("pen", "tool"), ("box", "container"), ("bag", "container"),
-            ("map", "artifact"), ("key", "artifact"), ("fan", "device"),
-            ("bed", "furniture"), ("pot", "container"), ("net", "artifact"),
-            ("nut", "food"), ("gem", "artifact"),
+            ("dog", "animal"),
+            ("cat", "animal"),
+            ("car", "vehicle"),
+            ("tree", "plant"),
+            ("fish", "animal"),
+            ("bird", "animal"),
+            ("boat", "vehicle"),
+            ("hat", "clothing"),
+            ("cup", "container"),
+            ("pen", "tool"),
+            ("box", "container"),
+            ("bag", "container"),
+            ("map", "artifact"),
+            ("key", "artifact"),
+            ("fan", "device"),
+            ("bed", "furniture"),
+            ("pot", "container"),
+            ("net", "artifact"),
+            ("nut", "food"),
+            ("gem", "artifact"),
         ];
 
         let vocab = vocab_from_terms(&wordnet, &[("rain", "weather")]);
@@ -154,8 +165,14 @@ mod tests {
     #[test]
     fn test_select_deterministic() {
         let vocab = vocab_from_terms(
-            &[("dog", "animal"), ("cat", "animal"), ("car", "vehicle"),
-              ("tree", "plant"), ("fish", "animal"), ("bird", "animal")],
+            &[
+                ("dog", "animal"),
+                ("cat", "animal"),
+                ("car", "vehicle"),
+                ("tree", "plant"),
+                ("fish", "animal"),
+                ("bird", "animal"),
+            ],
             &[("beach", "scene")],
         );
 
@@ -181,8 +198,13 @@ mod tests {
     #[test]
     fn test_select_with_seed_file() {
         let vocab = vocab_from_terms(
-            &[("dog", "animal"), ("cat", "animal"), ("car", "vehicle"),
-              ("tree", "plant"), ("fish", "animal")],
+            &[
+                ("dog", "animal"),
+                ("cat", "animal"),
+                ("car", "vehicle"),
+                ("tree", "plant"),
+                ("fish", "animal"),
+            ],
             &[],
         );
 

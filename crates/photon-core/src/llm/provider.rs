@@ -161,12 +161,10 @@ impl LlmProviderFactory {
             }
             "anthropic" => {
                 let cfg = config.anthropic.clone().unwrap_or_default();
-                let api_key = resolve_env_var(&cfg.api_key).ok_or_else(|| {
-                    PipelineError::Llm {
-                        message: "Anthropic API key not set. Set ANTHROPIC_API_KEY env var."
-                            .to_string(),
-                        status_code: None,
-                    }
+                let api_key = resolve_env_var(&cfg.api_key).ok_or_else(|| PipelineError::Llm {
+                    message: "Anthropic API key not set. Set ANTHROPIC_API_KEY env var."
+                        .to_string(),
+                    status_code: None,
                 })?;
                 let model = model_override
                     .map(String::from)
@@ -177,11 +175,10 @@ impl LlmProviderFactory {
             }
             "openai" => {
                 let cfg = config.openai.clone().unwrap_or_default();
-                let api_key =
-                    resolve_env_var(&cfg.api_key).ok_or_else(|| PipelineError::Llm {
-                        message: "OpenAI API key not set. Set OPENAI_API_KEY env var.".to_string(),
-                        status_code: None,
-                    })?;
+                let api_key = resolve_env_var(&cfg.api_key).ok_or_else(|| PipelineError::Llm {
+                    message: "OpenAI API key not set. Set OPENAI_API_KEY env var.".to_string(),
+                    status_code: None,
+                })?;
                 let model = model_override
                     .map(String::from)
                     .unwrap_or(cfg.model.clone());
@@ -191,12 +188,11 @@ impl LlmProviderFactory {
             }
             "hyperbolic" => {
                 let cfg = config.hyperbolic.clone().unwrap_or_default();
-                let api_key =
-                    resolve_env_var(&cfg.api_key).ok_or_else(|| PipelineError::Llm {
-                        message: "Hyperbolic API key not set. Set HYPERBOLIC_API_KEY env var."
-                            .to_string(),
-                        status_code: None,
-                    })?;
+                let api_key = resolve_env_var(&cfg.api_key).ok_or_else(|| PipelineError::Llm {
+                    message: "Hyperbolic API key not set. Set HYPERBOLIC_API_KEY env var."
+                        .to_string(),
+                    status_code: None,
+                })?;
                 let model = model_override
                     .map(String::from)
                     .unwrap_or(cfg.model.clone());
@@ -249,10 +245,7 @@ mod tests {
     #[test]
     fn test_describe_image_with_tags() {
         let image = ImageInput::from_bytes(&[1, 2, 3], "jpeg");
-        let tags = vec![
-            Tag::new("beach", 0.95),
-            Tag::new("sunset", 0.80),
-        ];
+        let tags = vec![Tag::new("beach", 0.95), Tag::new("sunset", 0.80)];
         let request = LlmRequest::describe_image(image, &tags);
         assert!(request.prompt.contains("beach, sunset"));
     }

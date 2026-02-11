@@ -26,10 +26,7 @@ impl NeighborExpander {
             .iter()
             .enumerate()
             .filter(|(i, t)| {
-                *i != term_index
-                    && t.hypernyms
-                        .first()
-                        .map(|h| h.as_str()) == Some(parent)
+                *i != term_index && t.hypernyms.first().map(|h| h.as_str()) == Some(parent)
             })
             .map(|(i, _)| i)
             .collect()

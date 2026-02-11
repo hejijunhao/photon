@@ -57,6 +57,14 @@ pub struct ProcessArgs {
     /// LLM model name (provider-specific)
     #[arg(long)]
     pub llm_model: Option<String>,
+
+    /// Show hierarchy paths in tag output (e.g., "animal > dog > labrador retriever")
+    #[arg(long)]
+    pub show_tag_paths: bool,
+
+    /// Disable ancestor deduplication in tags
+    #[arg(long)]
+    pub no_dedup_tags: bool,
 }
 
 /// Supported output formats.
@@ -161,6 +169,14 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
         Quality::Fast => {
             // Default — 224 model, no changes needed
         }
+    }
+
+    // Apply hierarchy dedup CLI flags
+    if args.show_tag_paths {
+        config.tagging.show_paths = true;
+    }
+    if args.no_dedup_tags {
+        config.tagging.deduplicate_ancestors = false;
     }
 
     // Create processor
@@ -359,12 +375,14 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
                         let results_clone = results.clone();
                         tokio::spawn(async move {
                             enricher
-                                .enrich_batch(&results_clone, move |enrich_result| match enrich_result {
-                                    EnrichResult::Success(patch) => {
-                                        let _ = tx.send(OutputRecord::Enrichment(patch));
-                                    }
-                                    EnrichResult::Failure(path, msg) => {
-                                        tracing::error!("Enrichment failed: {path:?} - {msg}");
+                                .enrich_batch(&results_clone, move |enrich_result| {
+                                    match enrich_result {
+                                        EnrichResult::Success(patch) => {
+                                            let _ = tx.send(OutputRecord::Enrichment(patch));
+                                        }
+                                        EnrichResult::Failure(path, msg) => {
+                                            tracing::error!("Enrichment failed: {path:?} - {msg}");
+                                        }
                                     }
                                 })
                                 .await
@@ -463,11 +481,8 @@ fn create_enricher(
         None => return Ok(None),
     };
 
-    let provider = LlmProviderFactory::create(
-        &provider_name,
-        &config.llm,
-        args.llm_model.as_deref(),
-    )?;
+    let provider =
+        LlmProviderFactory::create(&provider_name, &config.llm, args.llm_model.as_deref())?;
 
     let options = EnrichOptions {
         parallel: args.parallel.min(8), // Cap LLM concurrency
@@ -481,11 +496,7 @@ fn create_enricher(
 
 fn log_enrichment_stats(succeeded: usize, failed: usize) {
     if failed > 0 {
-        tracing::warn!(
-            "LLM enrichment: {} succeeded, {} failed",
-            succeeded,
-            failed
-        );
+        tracing::warn!("LLM enrichment: {} succeeded, {} failed", succeeded, failed);
     } else {
         tracing::info!("LLM enrichment: {} succeeded", succeeded);
     }

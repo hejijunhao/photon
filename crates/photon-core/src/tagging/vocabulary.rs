@@ -232,8 +232,13 @@ mod tests {
     #[test]
     fn test_subset_preserves_terms() {
         let vocab = vocab_from_terms(
-            &[("dog", "animal"), ("cat", "animal"), ("car", "vehicle"),
-              ("tree", "plant"), ("fish", "animal")],
+            &[
+                ("dog", "animal"),
+                ("cat", "animal"),
+                ("car", "vehicle"),
+                ("tree", "plant"),
+                ("fish", "animal"),
+            ],
             &[],
         );
 
@@ -246,10 +251,7 @@ mod tests {
 
     #[test]
     fn test_subset_empty() {
-        let vocab = vocab_from_terms(
-            &[("dog", "animal"), ("cat", "animal")],
-            &[],
-        );
+        let vocab = vocab_from_terms(&[("dog", "animal"), ("cat", "animal")], &[]);
 
         let sub = vocab.subset(&[]);
         assert!(sub.is_empty());
@@ -267,26 +269,20 @@ mod tests {
         assert!(sub.get("cat").is_some());
         assert!(sub.get("car").is_some());
         assert!(sub.get("dog").is_none()); // not in subset
-        // Verify index points to correct position in the SUBSET
+                                           // Verify index points to correct position in the SUBSET
         assert_eq!(sub.get("cat").unwrap().name, "cat");
         assert_eq!(sub.get("car").unwrap().name, "car");
     }
 
     #[test]
     fn test_parent_of_wordnet_term() {
-        let vocab = vocab_from_terms(
-            &[("dog", "animal|organism|entity")],
-            &[],
-        );
+        let vocab = vocab_from_terms(&[("dog", "animal|organism|entity")], &[]);
         assert_eq!(vocab.parent_of(0), Some("animal"));
     }
 
     #[test]
     fn test_parent_of_supplemental_term() {
-        let vocab = vocab_from_terms(
-            &[],
-            &[("sunset", "scene")],
-        );
+        let vocab = vocab_from_terms(&[], &[("sunset", "scene")]);
         assert_eq!(vocab.parent_of(0), None);
     }
 
@@ -309,12 +305,12 @@ mod tests {
 
     #[test]
     fn test_subset_preserves_hypernyms() {
-        let vocab = vocab_from_terms(
-            &[("dog", "animal|organism|entity")],
-            &[],
-        );
+        let vocab = vocab_from_terms(&[("dog", "animal|organism|entity")], &[]);
 
         let sub = vocab.subset(&[0]);
-        assert_eq!(sub.all_terms()[0].hypernyms, vec!["animal", "organism", "entity"]);
+        assert_eq!(
+            sub.all_terms()[0].hypernyms,
+            vec!["animal", "organism", "entity"]
+        );
     }
 }

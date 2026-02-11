@@ -6,6 +6,8 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.6](#046---2026-02-11)** — Housekeeping: `cargo fmt` across workspace
+- **[0.4.5](#045---2026-02-11)** — Hierarchy dedup: ancestor suppression and WordNet path annotation for cleaner tag output
 - **[0.4.4](#044---2026-02-11)** — Relevance pruning: self-organizing three-pool vocabulary (Active/Warm/Cold) with WordNet neighbor expansion
 - **[0.4.3](#043---2026-02-11)** — Progressive encoding: first-run cold-start reduced from ~90min to ~30s via seed vocabulary + background chunked encoding
 - **[0.4.2](#042---2026-02-11)** — Post-fix review: invalid JSON in batch+file+LLM, empty response guards, dead field removal
@@ -17,6 +19,61 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.6] - 2026-02-11
+
+### Summary
+
+Housekeeping pass: ran `cargo fmt` across the workspace to fix 6 formatting violations (line-length wrapping, closure argument formatting). No logic changes. 120 tests passing, zero clippy warnings.
+
+### Changed
+
+- **`crates/photon/src/cli/process.rs`** — reformatted long lines and closure arguments (3 sites)
+- **`crates/photon-core/src/llm/enricher.rs`** — reformatted closure wrapping (1 site)
+- **`crates/photon-core/src/llm/anthropic.rs`** — reformatted long line (1 site)
+- **`crates/photon-core/src/llm/ollama.rs`** — reformatted long line (1 site)
+- **`crates/photon-core/src/tagging/seed.rs`** — reformatted test data arrays
+- **`crates/photon-core/src/tagging/vocabulary.rs`** — reformatted test data arrays
+
+---
+
+## [0.4.5] - 2026-02-11
+
+### Summary
+
+Post-processing step that suppresses redundant ancestor tags and optionally annotates surviving tags with abbreviated WordNet hierarchy paths. When both "labrador retriever" (0.87) and "dog" (0.68) pass threshold, the ancestor "dog" is suppressed — the specific term is strictly more informative. Surviving tags can optionally display their hierarchy: `"animal > canine > labrador retriever"`. Both features are off by default; existing JSON output is byte-identical when disabled. 120 tests passing (+20 new), zero clippy warnings.
+
+### Added
+
+- **`HierarchyDedup`** (`tagging/hierarchy.rs`) — unit struct with two pure functions: `deduplicate()` suppresses tags that are WordNet ancestors of other tags in the list; `add_paths()` annotates surviving tags with abbreviated hierarchy paths (generic terms like "entity", "object", "organism" filtered out)
+- **`Tag.path`** (`types.rs`) — new `Option<String>` field with `#[serde(skip_serializing_if = "Option::is_none")]` for backward-compatible hierarchy path display
+- **CLI flags** — `--show-tag-paths` enables path annotation, `--no-dedup-tags` disables ancestor suppression
+
+### Changed
+
+- **`TagScorer::hits_to_tags()`** — wired dedup and path annotation at the end of the shared helper, so both `score()` and `score_with_pools()` benefit automatically
+- **`TaggingConfig`** — added `deduplicate_ancestors: bool` (default `false`), `show_paths: bool` (default `false`), `path_max_depth: usize` (default `2`)
+
+### Configuration
+
+```toml
+[tagging]
+deduplicate_ancestors = false   # Suppress tags that are ancestors of more specific tags
+show_paths = false              # Annotate tags with WordNet hierarchy paths
+path_max_depth = 2              # Max ancestor levels shown in path strings
+```
+
+### Tests
+
+120 tests passing (+20 new):
+
+- **Hierarchy — is_ancestor** (5): `test_is_ancestor_direct_parent`, `test_is_ancestor_grandparent`, `test_is_ancestor_unrelated`, `test_is_ancestor_self`, `test_is_ancestor_supplemental`
+- **Hierarchy — deduplicate** (6): `test_dedup_suppresses_ancestors`, `test_dedup_preserves_unrelated`, `test_dedup_multiple_chains`, `test_dedup_no_hypernyms`, `test_dedup_empty_tags`, `test_dedup_preserves_order`
+- **Hierarchy — add_paths** (6): `test_add_paths_basic`, `test_add_paths_skips_generic`, `test_add_paths_max_ancestors`, `test_add_paths_supplemental_no_path`, `test_add_paths_short_chain`, `test_add_paths_all_generic_hypernyms`
+- **Types** (2): `test_tag_serde_without_path`, `test_tag_serde_with_path`
+- **Config** (1): `test_tagging_config_hierarchy_defaults`
 
 ---
 

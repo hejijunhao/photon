@@ -146,10 +146,13 @@ impl ImageProcessor {
 
             // Guard: progressive encoding requires an active tokio runtime
             if tokio::runtime::Handle::try_current().is_err() {
-                tracing::warn!(
-                    "No tokio runtime — falling back to blocking encode for tagging"
+                tracing::warn!("No tokio runtime — falling back to blocking encode for tagging");
+                return self.load_tagging_blocking(
+                    config,
+                    vocabulary,
+                    &label_bank_path,
+                    &vocab_hash,
                 );
-                return self.load_tagging_blocking(config, vocabulary, &label_bank_path, &vocab_hash);
             }
 
             let text_encoder = Arc::new(SigLipTextEncoder::new(&model_dir)?);
@@ -239,11 +242,7 @@ impl ImageProcessor {
     }
 
     /// Load or create the relevance tracker.
-    fn load_relevance_tracker(
-        &mut self,
-        config: &Config,
-        vocabulary: &Vocabulary,
-    ) -> Result<()> {
+    fn load_relevance_tracker(&mut self, config: &Config, vocabulary: &Vocabulary) -> Result<()> {
         let taxonomy_dir = config.taxonomy_dir();
         let relevance_path = taxonomy_dir.join("relevance.json");
 
@@ -299,8 +298,7 @@ impl ImageProcessor {
     ///
     /// Call this at the end of a batch processing run.
     pub fn save_relevance(&self, config: &Config) -> Result<()> {
-        if let (Some(scorer_lock), Some(tracker_lock)) =
-            (&self.tag_scorer, &self.relevance_tracker)
+        if let (Some(scorer_lock), Some(tracker_lock)) = (&self.tag_scorer, &self.relevance_tracker)
         {
             let scorer = scorer_lock.read().unwrap();
             let tracker = tracker_lock.read().unwrap();
@@ -453,10 +451,8 @@ impl ImageProcessor {
                             let promoted = tracker.sweep();
                             if !promoted.is_empty() && self.neighbor_expansion {
                                 let scorer = scorer_lock.read().unwrap();
-                                let siblings = NeighborExpander::expand_all(
-                                    scorer.vocabulary(),
-                                    &promoted,
-                                );
+                                let siblings =
+                                    NeighborExpander::expand_all(scorer.vocabulary(), &promoted);
                                 let cold_siblings: Vec<usize> = siblings
                                     .iter()
                                     .filter(|&&i| tracker.pool(i) == Pool::Cold)

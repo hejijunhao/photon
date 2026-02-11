@@ -298,6 +298,17 @@ pub struct TaggingConfig {
 
     /// Relevance pruning settings (three-pool system)
     pub relevance: RelevanceConfig,
+
+    /// Remove ancestor tags when a more specific descendant matches.
+    /// E.g., suppress "dog" when "labrador retriever" is present.
+    pub deduplicate_ancestors: bool,
+
+    /// Include hierarchy paths in tag output.
+    /// E.g., "animal > dog > labrador retriever"
+    pub show_paths: bool,
+
+    /// Maximum ancestor levels to show in hierarchy paths.
+    pub path_max_depth: usize,
 }
 
 impl Default for TaggingConfig {
@@ -309,6 +320,9 @@ impl Default for TaggingConfig {
             vocabulary: VocabularyConfig::default(),
             progressive: ProgressiveConfig::default(),
             relevance: RelevanceConfig::default(),
+            deduplicate_ancestors: false,
+            show_paths: false,
+            path_max_depth: 2,
         }
     }
 }
@@ -548,6 +562,14 @@ mod tests {
         let config = Config::default();
         assert!(config.tagging.progressive.enabled);
         assert_eq!(config.tagging.progressive.seed_size, 2000);
+    }
+
+    #[test]
+    fn test_tagging_config_hierarchy_defaults() {
+        let config = TaggingConfig::default();
+        assert!(!config.deduplicate_ancestors);
+        assert!(!config.show_paths);
+        assert_eq!(config.path_max_depth, 2);
     }
 
     #[test]

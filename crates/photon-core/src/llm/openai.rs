@@ -146,11 +146,10 @@ impl LlmProvider for OpenAiProvider {
             });
         }
 
-        let chat_resp: ChatResponse =
-            resp.json().await.map_err(|e| PipelineError::Llm {
-                message: format!("Failed to parse OpenAI response: {e}"),
-                status_code: None,
-            })?;
+        let chat_resp: ChatResponse = resp.json().await.map_err(|e| PipelineError::Llm {
+            message: format!("Failed to parse OpenAI response: {e}"),
+            status_code: None,
+        })?;
 
         let text = chat_resp
             .choices
