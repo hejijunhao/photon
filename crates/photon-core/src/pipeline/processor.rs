@@ -189,7 +189,9 @@ impl ImageProcessor {
 
             // Install the seed scorer
             {
-                let mut lock = scorer_slot.write().unwrap();
+                let mut lock = scorer_slot
+                    .write()
+                    .expect("TagScorer lock poisoned during seed installation");
                 *lock = seed_scorer;
             }
 
@@ -300,8 +302,12 @@ impl ImageProcessor {
     pub fn save_relevance(&self, config: &Config) -> Result<()> {
         if let (Some(scorer_lock), Some(tracker_lock)) = (&self.tag_scorer, &self.relevance_tracker)
         {
-            let scorer = scorer_lock.read().unwrap();
-            let tracker = tracker_lock.read().unwrap();
+            let scorer = scorer_lock
+                .read()
+                .expect("TagScorer lock poisoned");
+            let tracker = tracker_lock
+                .read()
+                .expect("RelevanceTracker lock poisoned");
             let taxonomy_dir = config.taxonomy_dir();
             std::fs::create_dir_all(&taxonomy_dir).map_err(|e| PipelineError::Model {
                 message: format!("Failed to create taxonomy dir {:?}: {}", taxonomy_dir, e),
@@ -433,15 +439,21 @@ impl ImageProcessor {
                 (Some(scorer_lock), Some(tracker_lock), emb) if !emb.is_empty() => {
                     // Phase 1: Score under READ lock (concurrent, ~2ms)
                     let (tags, raw_hits) = {
-                        let scorer = scorer_lock.read().unwrap();
-                        let tracker = tracker_lock.read().unwrap();
+                        let scorer = scorer_lock
+                            .read()
+                            .expect("TagScorer lock poisoned during scoring");
+                        let tracker = tracker_lock
+                            .read()
+                            .expect("RelevanceTracker lock poisoned during scoring");
                         scorer.score_with_pools(emb, &tracker)
                     };
                     // Read locks dropped here
 
                     // Phase 2: Record hits + periodic sweep under WRITE lock (brief, ~μs)
                     {
-                        let mut tracker = tracker_lock.write().unwrap();
+                        let mut tracker = tracker_lock
+                            .write()
+                            .expect("RelevanceTracker lock poisoned during hit recording");
                         tracker.record_hits(&raw_hits);
 
                         // Periodic sweep + neighbor expansion
@@ -450,7 +462,9 @@ impl ImageProcessor {
                         {
                             let promoted = tracker.sweep();
                             if !promoted.is_empty() && self.neighbor_expansion {
-                                let scorer = scorer_lock.read().unwrap();
+                                let scorer = scorer_lock
+                                    .read()
+                                    .expect("TagScorer lock poisoned during neighbor expansion");
                                 let siblings =
                                     NeighborExpander::expand_all(scorer.vocabulary(), &promoted);
                                 let cold_siblings: Vec<usize> = siblings
@@ -482,7 +496,9 @@ impl ImageProcessor {
                 }
                 // No relevance tracking — score all terms (4a behavior)
                 (Some(scorer_lock), None, emb) if !emb.is_empty() => {
-                    let scorer = scorer_lock.read().unwrap();
+                    let scorer = scorer_lock
+                        .read()
+                        .expect("TagScorer lock poisoned during scoring");
                     scorer.score(emb)
                 }
                 _ => vec![],

@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.13](#0413---2026-02-11)** — Hardening: lock poisoning diagnostics, config validation with range checks, malformed config warning
 - **[0.4.12](#0412---2026-02-11)** — Benchmark fix: fixture paths now resolve via `CARGO_MANIFEST_DIR` so all 5 benchmarks run from any working directory
 - **[0.4.11](#0411---2026-02-11)** — Final assessment: comprehensive code review (7.5/10), README config fix, test verification
 - **[0.4.10](#0410---2026-02-11)** — CI fix: replace `is_some()`+`unwrap()` with `Option::filter()` to satisfy `clippy::unnecessary_unwrap`
@@ -25,6 +26,35 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.13] - 2026-02-11
+
+### Summary
+
+Hardening pass addressing three quick-win items from the code assessment (`docs/executing/finish-testing.md`). Replaced 8 bare `.unwrap()` calls on `RwLock` with descriptive `.expect()` messages, added config validation with range checks on 9 fields, and surfaced a warning when `config.toml` is malformed instead of silently falling back to defaults. 123 tests passing (+5 new validation tests), zero clippy warnings.
+
+### Fixed
+
+- **`processor.rs` — lock poisoning diagnostics** — 8 `.unwrap()` calls on `RwLock::read()`/`write()` replaced with `.expect()` messages that identify which lock (`TagScorer` vs `RelevanceTracker`) and which operation (scoring, seed installation, hit recording, neighbor expansion, save) was in progress when the lock was found poisoned
+- **`main.rs` — silent config error** — `Config::load().unwrap_or_default()` replaced with explicit `match` that prints a warning to stderr (`eprintln!`) before falling back to defaults; uses stderr because logging isn't initialized yet at this point in startup
+
+### Added
+
+- **`config.rs` — `Config::validate()`** — range validation called from `Config::load_from()`, rejects zero values for `parallel_workers`, `buffer_size`, `max_file_size_mb`, `max_image_dimension`, `decode_timeout_ms`, `embed_timeout_ms`, `llm_timeout_ms`, `thumbnail.size`, and out-of-range `tagging.min_confidence` (must be 0.0–1.0); returns `ConfigError::ValidationError` with field-specific messages
+
+### Tests
+
+123 tests passing (+5 from 118), zero clippy warnings, zero formatting violations.
+
+| New test | Validates |
+|----------|-----------|
+| `test_default_config_passes_validation` | Default config always valid |
+| `test_validate_rejects_zero_parallel_workers` | Workers = 0 rejected |
+| `test_validate_rejects_zero_thumbnail_size` | Thumbnail size = 0 rejected |
+| `test_validate_rejects_zero_timeout` | Timeout = 0 rejected |
+| `test_validate_rejects_invalid_min_confidence` | Confidence outside 0.0–1.0 rejected |
 
 ---
 

@@ -60,8 +60,18 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging from config, with CLI verbose override
-    let config = photon_core::Config::load().unwrap_or_default();
+    // Initialize logging from config, with CLI verbose override.
+    // Note: logging isn't initialized yet, so use eprintln for config warnings.
+    let config = match photon_core::Config::load() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!(
+                "Warning: Failed to load config: {e}\n  \
+                 Using default configuration. Check your config file with `photon config path`."
+            );
+            photon_core::Config::default()
+        }
+    };
     logging::init_from_config(&config, cli.verbose, cli.json_logs);
 
     tracing::debug!("Photon v{}", photon_core::VERSION);
