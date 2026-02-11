@@ -97,16 +97,17 @@ impl SigLipSession {
                 message: "Model did not produce pooler_output".to_string(),
             })?;
 
-        let (shape, data) = pooler_output
-            .1
-            .try_extract_tensor::<f32>()
-            .map_err(|e| PipelineError::Embedding {
-                path: Default::default(),
-                message: format!("Failed to extract pooler_output tensor: {e}"),
-            })?;
+        let (shape, data) =
+            pooler_output
+                .1
+                .try_extract_tensor::<f32>()
+                .map_err(|e| PipelineError::Embedding {
+                    path: Default::default(),
+                    message: format!("Failed to extract pooler_output tensor: {e}"),
+                })?;
 
         // pooler_output is [1, 768] — extract the single embedding vector.
-        let raw = match shape.len() {
+        let mut raw = match shape.len() {
             1 => data.to_vec(),
             2 => {
                 let dim = shape[1] as usize;
@@ -115,42 +116,12 @@ impl SigLipSession {
             _ => {
                 return Err(PipelineError::Embedding {
                     path: Default::default(),
-                    message: format!("Unexpected pooler_output shape: {:?}", &*shape),
+                    message: format!("Unexpected pooler_output shape: {:?}", shape),
                 });
             }
         };
 
-        Ok(l2_normalize(raw))
-    }
-}
-
-/// L2-normalize a vector so its magnitude is 1.
-fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > f32::EPSILON {
-        for x in &mut v {
-            *x /= norm;
-        }
-    }
-    v
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_l2_normalize() {
-        let v = l2_normalize(vec![3.0, 4.0]);
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-6);
-        assert!((v[0] - 0.6).abs() < 1e-6);
-        assert!((v[1] - 0.8).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_l2_normalize_zero_vector() {
-        let v = l2_normalize(vec![0.0, 0.0, 0.0]);
-        assert_eq!(v, vec![0.0, 0.0, 0.0]);
+        crate::math::l2_normalize_in_place(&mut raw);
+        Ok(raw)
     }
 }

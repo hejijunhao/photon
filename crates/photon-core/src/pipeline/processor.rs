@@ -98,9 +98,15 @@ impl ImageProcessor {
 
         // Load or build label bank
         let label_bank_path = taxonomy_dir.join("label_bank.bin");
-        let label_bank = if LabelBank::exists(&label_bank_path) {
+        let vocab_hash = vocabulary.content_hash();
+        let label_bank = if LabelBank::exists(&label_bank_path)
+            && LabelBank::cache_valid(&label_bank_path, &vocab_hash)
+        {
             LabelBank::load(&label_bank_path, vocabulary.len())?
         } else {
+            if LabelBank::exists(&label_bank_path) {
+                tracing::info!("Vocabulary changed — rebuilding label bank cache...");
+            }
             // First run: encode all terms
             if !SigLipTextEncoder::model_exists(&model_dir) {
                 tracing::warn!(
@@ -113,7 +119,7 @@ impl ImageProcessor {
             std::fs::create_dir_all(&taxonomy_dir).map_err(|e| PipelineError::Model {
                 message: format!("Failed to create taxonomy dir {:?}: {}", taxonomy_dir, e),
             })?;
-            bank.save(&label_bank_path)?;
+            bank.save(&label_bank_path, &vocab_hash)?;
             bank
         };
 
@@ -197,40 +203,41 @@ impl ImageProcessor {
 
         // Generate embedding (Phase 3)
         let embed_start = std::time::Instant::now();
-        let embedding =
-            if options.skip_embedding || self.embedding_engine.is_none() {
-                vec![]
-            } else {
-                let engine = Arc::clone(self.embedding_engine.as_ref().unwrap());
-                let image_clone = decoded.image.clone();
-                let timeout_duration = Duration::from_millis(self.embed_timeout_ms);
-                let embed_path = path.to_path_buf();
+        let embedding = if options.skip_embedding {
+            vec![]
+        } else if let Some(engine) = &self.embedding_engine {
+            let engine = Arc::clone(engine);
+            let image_clone = decoded.image.clone();
+            let timeout_duration = Duration::from_millis(self.embed_timeout_ms);
+            let embed_path = path.to_path_buf();
 
-                let result = tokio::time::timeout(timeout_duration, async {
-                    tokio::task::spawn_blocking(move || engine.embed(&image_clone)).await
-                })
-                .await;
+            let result = tokio::time::timeout(timeout_duration, async {
+                tokio::task::spawn_blocking(move || engine.embed(&image_clone)).await
+            })
+            .await;
 
-                match result {
-                    Ok(Ok(Ok(emb))) => emb,
-                    Ok(Ok(Err(e))) => return Err(e.into()),
-                    Ok(Err(e)) => {
-                        return Err(PipelineError::Embedding {
-                            path: embed_path,
-                            message: format!("Embedding task panicked: {e}"),
-                        }
-                        .into())
+            match result {
+                Ok(Ok(Ok(emb))) => emb,
+                Ok(Ok(Err(e))) => return Err(e.into()),
+                Ok(Err(e)) => {
+                    return Err(PipelineError::Embedding {
+                        path: embed_path,
+                        message: format!("Embedding task panicked: {e}"),
                     }
-                    Err(_) => {
-                        return Err(PipelineError::Timeout {
-                            path: embed_path,
-                            stage: "embed".to_string(),
-                            timeout_ms: self.embed_timeout_ms,
-                        }
-                        .into())
-                    }
+                    .into())
                 }
-            };
+                Err(_) => {
+                    return Err(PipelineError::Timeout {
+                        path: embed_path,
+                        stage: "embed".to_string(),
+                        timeout_ms: self.embed_timeout_ms,
+                    }
+                    .into())
+                }
+            }
+        } else {
+            vec![]
+        };
         let embed_time = embed_start.elapsed();
         tracing::trace!("  Embed: {:?}", embed_time);
 

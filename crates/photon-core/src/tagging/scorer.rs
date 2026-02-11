@@ -77,7 +77,7 @@ impl TagScorer {
             .collect();
 
         // Sort by confidence descending
-        tags.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+        tags.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
 
         // Limit to max_tags
         tags.truncate(self.config.max_tags);

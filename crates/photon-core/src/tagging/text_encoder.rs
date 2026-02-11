@@ -63,7 +63,11 @@ impl SigLipTextEncoder {
 
         tracing::debug!(
             "Loaded SigLIP text encoder (inputs: {:?}, outputs: {:?})",
-            session.inputs().iter().map(|i| i.name()).collect::<Vec<_>>(),
+            session
+                .inputs()
+                .iter()
+                .map(|i| i.name())
+                .collect::<Vec<_>>(),
             session
                 .outputs()
                 .iter()
@@ -108,13 +112,12 @@ impl SigLipTextEncoder {
             message: format!("Text encoder lock poisoned: {e}"),
         })?;
 
-        let input_ids_value = Value::from_array((
-            vec![batch_size as i64, max_length as i64],
-            input_ids,
-        ))
-        .map_err(|e| PipelineError::Model {
-            message: format!("Failed to create input tensor: {e}"),
-        })?;
+        let input_ids_value =
+            Value::from_array((vec![batch_size as i64, max_length as i64], input_ids)).map_err(
+                |e| PipelineError::Model {
+                    message: format!("Failed to create input tensor: {e}"),
+                },
+            )?;
 
         let outputs = session
             .run(ort::inputs!["input_ids" => input_ids_value])
@@ -130,17 +133,18 @@ impl SigLipTextEncoder {
                 message: "Text encoder did not produce pooler_output".to_string(),
             })?;
 
-        let (_shape, data) = pooler_output
-            .1
-            .try_extract_tensor::<f32>()
-            .map_err(|e| PipelineError::Model {
-                message: format!("Failed to extract pooler_output: {e}"),
-            })?;
+        let (_shape, data) =
+            pooler_output
+                .1
+                .try_extract_tensor::<f32>()
+                .map_err(|e| PipelineError::Model {
+                    message: format!("Failed to extract pooler_output: {e}"),
+                })?;
 
         // Split flat output into per-text embeddings and L2-normalize
         let embeddings: Vec<Vec<f32>> = data
             .chunks(self.embedding_dim)
-            .map(|chunk| l2_normalize(chunk))
+            .map(crate::math::l2_normalize)
             .collect();
 
         Ok(embeddings)
@@ -155,15 +159,5 @@ impl SigLipTextEncoder {
     /// Check whether the text encoder model files exist.
     pub fn model_exists(model_dir: &Path) -> bool {
         model_dir.join("text_model.onnx").exists() && model_dir.join("tokenizer.json").exists()
-    }
-}
-
-/// L2-normalize a slice to unit length.
-fn l2_normalize(v: &[f32]) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > f32::EPSILON {
-        v.iter().map(|x| x / norm).collect()
-    } else {
-        v.to_vec()
     }
 }

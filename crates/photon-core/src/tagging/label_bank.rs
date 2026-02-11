@@ -47,9 +47,8 @@ impl LabelBank {
 
         // Encode in large batches for efficiency
         for (batch_idx, chunk) in prompts.chunks(batch_size).enumerate() {
-            let embeddings = text_encoder.encode_batch(
-                &chunk.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-            )?;
+            let embeddings = text_encoder
+                .encode_batch(&chunk.iter().map(|s| s.to_string()).collect::<Vec<_>>())?;
 
             for emb in &embeddings {
                 matrix.extend_from_slice(emb);
@@ -82,15 +81,27 @@ impl LabelBank {
     }
 
     /// Save label bank to disk as raw f32 binary for fast reload.
-    pub fn save(&self, path: &Path) -> Result<(), PipelineError> {
-        let bytes: Vec<u8> = self
-            .matrix
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+    ///
+    /// Also writes a `.meta` sidecar with vocabulary hash for cache invalidation.
+    pub fn save(&self, path: &Path, vocab_hash: &str) -> Result<(), PipelineError> {
+        let bytes: Vec<u8> = self.matrix.iter().flat_map(|f| f.to_le_bytes()).collect();
         std::fs::write(path, &bytes).map_err(|e| PipelineError::Model {
             message: format!("Failed to save label bank to {:?}: {}", path, e),
         })?;
+
+        // Write metadata sidecar
+        let meta_path = path.with_extension("meta");
+        let meta = format!(
+            "vocab_hash={}\nterm_count={}\nembedding_dim={}\n",
+            vocab_hash, self.term_count, self.embedding_dim
+        );
+        std::fs::write(&meta_path, meta).map_err(|e| PipelineError::Model {
+            message: format!(
+                "Failed to save label bank metadata to {:?}: {}",
+                meta_path, e
+            ),
+        })?;
+
         tracing::info!(
             "Saved label bank to {:?} ({:.1} MB)",
             path,
@@ -112,7 +123,9 @@ impl LabelBank {
             return Err(PipelineError::Model {
                 message: format!(
                     "Label bank size mismatch: expected {} bytes ({} terms), got {} bytes",
-                    expected_len, term_count, bytes.len()
+                    expected_len,
+                    term_count,
+                    bytes.len()
                 ),
             });
         }
@@ -134,6 +147,19 @@ impl LabelBank {
     /// Check if a saved label bank exists at the given path.
     pub fn exists(path: &Path) -> bool {
         path.exists()
+    }
+
+    /// Check if a cached label bank's vocabulary hash matches the current vocabulary.
+    ///
+    /// Returns `true` if the cache is valid (hashes match), `false` otherwise.
+    pub fn cache_valid(path: &Path, vocab_hash: &str) -> bool {
+        let meta_path = path.with_extension("meta");
+        let Ok(content) = std::fs::read_to_string(&meta_path) else {
+            return false;
+        };
+        content
+            .lines()
+            .any(|line| line == format!("vocab_hash={}", vocab_hash))
     }
 
     /// Get the flat matrix for batch dot product.

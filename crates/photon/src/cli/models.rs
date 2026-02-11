@@ -90,11 +90,7 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
                 let dest = variant_dir.join(VISUAL_MODEL_LOCAL_NAME);
 
                 if dest.exists() {
-                    tracing::info!(
-                        "{} already exists at {:?}",
-                        variant.label,
-                        dest
-                    );
+                    tracing::info!("{} already exists at {:?}", variant.label, dest);
                     continue;
                 }
 
@@ -179,37 +175,54 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
             for variant in VISION_VARIANTS {
                 let variant_dir = model_dir.join(variant.name);
                 let visual_path = variant_dir.join(VISUAL_MODEL_LOCAL_NAME);
-                let status = if visual_path.exists() { "ready" } else { "not installed" };
+                let status = if visual_path.exists() {
+                    "ready"
+                } else {
+                    "not installed"
+                };
                 let default_marker = if variant.name == config.embedding.model {
                     "  (default)"
                 } else {
                     ""
                 };
-                println!(
-                    "    - {:30} {:14}{}",
-                    variant.name, status, default_marker
-                );
+                println!("    - {:30} {:14}{}", variant.name, status, default_marker);
             }
 
             // Shared models
             println!("\n  Shared:");
             let text_path = model_dir.join(TEXT_MODEL_LOCAL_NAME);
-            let text_status = if text_path.exists() { "ready" } else { "not installed" };
+            let text_status = if text_path.exists() {
+                "ready"
+            } else {
+                "not installed"
+            };
             println!("    - {:30} {}", TEXT_MODEL_LOCAL_NAME, text_status);
 
             let tok_path = model_dir.join(TOKENIZER_LOCAL_NAME);
-            let tok_status = if tok_path.exists() { "ready" } else { "not installed" };
+            let tok_status = if tok_path.exists() {
+                "ready"
+            } else {
+                "not installed"
+            };
             println!("    - {:30} {}", TOKENIZER_LOCAL_NAME, tok_status);
 
             // Vocabulary
             let vocab_dir = config.vocabulary_dir();
             println!("\n  Vocabulary:");
             let nouns_path = vocab_dir.join("wordnet_nouns.txt");
-            let nouns_status = if nouns_path.exists() { "ready" } else { "not installed" };
+            let nouns_status = if nouns_path.exists() {
+                "ready"
+            } else {
+                "not installed"
+            };
             println!("    - {:30} {}", "wordnet_nouns.txt", nouns_status);
 
             let supp_path = vocab_dir.join("supplemental.txt");
-            let supp_status = if supp_path.exists() { "ready" } else { "not installed" };
+            let supp_status = if supp_path.exists() {
+                "ready"
+            } else {
+                "not installed"
+            };
             println!("    - {:30} {}", "supplemental.txt", supp_status);
         }
 
@@ -251,8 +264,11 @@ fn install_vocabulary(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Download a file from a URL to a local path with progress reporting.
+/// Download a file from a URL to a local path, streaming to disk.
 async fn download_file(url: &str, dest: &Path) -> anyhow::Result<()> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
     let client = reqwest::Client::new();
     let response = client
         .get(url)
@@ -266,8 +282,25 @@ async fn download_file(url: &str, dest: &Path) -> anyhow::Result<()> {
         tracing::info!("  Size: {:.1} MB", size as f64 / (1024.0 * 1024.0));
     }
 
-    let bytes = response.bytes().await?;
-    std::fs::write(dest, &bytes)?;
+    let mut file = tokio::fs::File::create(dest).await?;
+    let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
 
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+
+        if let Some(total) = total_size {
+            if downloaded % (50 * 1024 * 1024) < chunk.len() as u64 {
+                tracing::info!(
+                    "  Progress: {:.0}%",
+                    downloaded as f64 / total as f64 * 100.0
+                );
+            }
+        }
+    }
+
+    file.flush().await?;
     Ok(())
 }

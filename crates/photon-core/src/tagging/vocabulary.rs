@@ -53,10 +53,8 @@ impl Vocabulary {
                     let name = parts[0].to_string();
                     let display_name = name.replace('_', " ");
                     let synset_id = Some(parts[1].to_string());
-                    let hypernyms: Vec<String> = parts[2]
-                        .split('|')
-                        .map(|s| s.replace('_', " "))
-                        .collect();
+                    let hypernyms: Vec<String> =
+                        parts[2].split('|').map(|s| s.replace('_', " ")).collect();
 
                     terms.push(VocabTerm {
                         name: name.clone(),
@@ -133,15 +131,16 @@ impl Vocabulary {
         self.by_name.get(name).map(|&i| &self.terms[i])
     }
 
-    /// Generate prompt templates for a term.
+    /// Compute a BLAKE3 hash of all term names in order.
     ///
-    /// Multiple prompts are averaged for better embedding accuracy.
-    pub fn prompts_for(&self, term: &VocabTerm) -> Vec<String> {
-        let name = &term.display_name;
-        vec![
-            name.to_string(),
-            format!("a photograph of {}", name),
-            format!("a photo of a {}", name),
-        ]
+    /// Used for label bank cache invalidation — if the vocabulary changes,
+    /// the hash changes and the cached label bank is rebuilt.
+    pub fn content_hash(&self) -> String {
+        let mut hasher = blake3::Hasher::new();
+        for term in &self.terms {
+            hasher.update(term.name.as_bytes());
+            hasher.update(b"\n");
+        }
+        hasher.finalize().to_hex().to_string()
     }
 }

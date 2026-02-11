@@ -45,8 +45,13 @@ pub fn init(verbose: bool, json_format: bool) {
 /// Initialize logging with configuration from Config.
 ///
 /// This variant reads settings from the Photon configuration file.
-pub fn init_from_config(config: &photon_core::Config, verbose_override: bool) {
-    let verbose = verbose_override || config.logging.level == "debug";
-    let json_format = config.logging.format == "json";
+pub fn init_from_config(
+    config: &photon_core::Config,
+    verbose_override: bool,
+    json_logs_override: bool,
+) {
+    let verbose =
+        verbose_override || config.logging.level == "debug" || config.logging.level == "trace";
+    let json_format = json_logs_override || config.logging.format == "json";
     init(verbose, json_format);
 }

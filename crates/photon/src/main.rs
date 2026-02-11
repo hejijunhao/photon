@@ -60,8 +60,9 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging
-    logging::init(cli.verbose, cli.json_logs);
+    // Initialize logging from config, with CLI verbose override
+    let config = photon_core::Config::load().unwrap_or_default();
+    logging::init_from_config(&config, cli.verbose, cli.json_logs);
 
     tracing::debug!("Photon v{}", photon_core::VERSION);
 

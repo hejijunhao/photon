@@ -6,11 +6,50 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.3.3](#033---2026-02-10)** — Pre-Phase 5 cleanup: clippy fixes, streaming downloads, cache invalidation, dead code removal
 - **[0.3.2](#032---2026-02-09)** — Zero-shot tagging: 68K-term vocabulary, SigLIP text encoder, label bank caching
 - **[0.3.1](#031---2026-02-09)** — Text encoder alignment spike: cross-modal verification, scoring parameter derivation
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.3.3] - 2026-02-10
+
+### Summary
+
+Code quality cleanup before Phase 5 (LLM integration). Addresses all issues from post-Phase-4a code review.
+
+### Fixed
+
+- **Clippy warnings (0 remaining):** removed unnecessary `&*` deref in `siglip.rs`, replaced `unwrap()` after `is_none()` with `if let` in `processor.rs`, simplified redundant closure in `text_encoder.rs`
+- **NaN safety** in tag scoring — `partial_cmp().unwrap()` replaced with `f32::total_cmp` in `scorer.rs`
+- **`Config::load_from`** signature changed from `&PathBuf` to `&Path`
+- **Double file-size validation** removed from `decode.rs` (already checked by `Validator`)
+
+### Changed
+
+- **Streaming model downloads** — `download_file` now streams response body to disk in chunks instead of buffering 350-441MB in RAM. Added `futures-util` dependency and `reqwest` `stream` feature.
+- **Logging initialization** wired to config file — `init_from_config` now reads `[logging]` section from config TOML, with CLI `--verbose` and `--json-logs` as overrides
+- **`l2_normalize` consolidated** into `math.rs` — removed duplicate implementations from `siglip.rs` and `text_encoder.rs`
+- **`taxonomy_dir()`** now derives from `model_dir` parent instead of hardcoding `$HOME/.photon/taxonomy`
+- **Label bank cache invalidation** — saves a `.meta` sidecar with vocabulary BLAKE3 hash; stale caches are automatically rebuilt when vocabulary changes
+
+### Removed
+
+- **Dead `Photon` struct** from `lib.rs` — `ImageProcessor` is the real public API
+- **Dead `Vocabulary::prompts_for()`** — unused method removed
+- Updated `lib.rs` doc example to use `ImageProcessor` directly
+
+### Dependencies
+
+- `futures-util` 0.3 (new)
+- `reqwest` stream feature enabled
+
+### Tests
+
+32 tests passing (same count: removed `test_photon_new`, added `test_l2_normalize_in_place`)
 
 ---
 

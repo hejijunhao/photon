@@ -5,7 +5,7 @@
 
 use crate::error::ConfigError;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Root configuration structure for Photon.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -56,7 +56,7 @@ impl Config {
     }
 
     /// Load configuration from a specific file path.
-    pub fn load_from(path: &PathBuf) -> Result<Self, ConfigError> {
+    pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
@@ -93,9 +93,12 @@ impl Config {
     }
 
     /// Get the taxonomy directory path (for cached label bank).
+    ///
+    /// Co-located with the models directory: if `model_dir` is `~/.photon/models`,
+    /// taxonomy lands at `~/.photon/taxonomy`.
     pub fn taxonomy_dir(&self) -> PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".photon").join("taxonomy")
+        let model_dir = self.model_dir();
+        model_dir.parent().unwrap_or(&model_dir).join("taxonomy")
     }
 
     /// Serialize the config to a pretty TOML string.

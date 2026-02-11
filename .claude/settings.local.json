@@ -15,7 +15,8 @@
       "Bash(cargo run:*)",
       "Bash(ps:*)",
       "Bash(cargo clippy:*)",
-      "Bash(cargo fmt:*)"
+      "Bash(cargo fmt:*)",
+      "Bash(git push:*)"
     ]
   }
 }

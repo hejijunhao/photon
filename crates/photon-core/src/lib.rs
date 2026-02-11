@@ -15,14 +15,16 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use photon_core::{Config, Photon, ProcessOptions};
+//! use photon_core::{Config, ImageProcessor, ProcessOptions};
 //!
 //! #[tokio::main]
 //! async fn main() -> photon_core::Result<()> {
 //!     let config = Config::load()?;
-//!     let photon = Photon::new(config).await?;
+//!     let mut processor = ImageProcessor::new(&config);
+//!     processor.load_embedding(&config)?;
+//!     processor.load_tagging(&config)?;
 //!
-//!     let result = photon.process("./image.jpg", ProcessOptions::default()).await?;
+//!     let result = processor.process(std::path::Path::new("./image.jpg")).await?;
 //!     println!("Tags: {:?}", result.tags);
 //!     Ok(())
 //! }
@@ -32,6 +34,7 @@
 pub mod config;
 pub mod embedding;
 pub mod error;
+pub mod math;
 pub mod output;
 pub mod pipeline;
 pub mod tagging;
@@ -48,38 +51,6 @@ pub use types::{ExifData, ProcessedImage, ProcessingStats, Tag};
 /// Library version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Photon processor - the main entry point for image processing.
-///
-/// This struct will be fully implemented in Phase 2+. For now, it provides
-/// configuration loading and placeholder methods.
-pub struct Photon {
-    config: Config,
-}
-
-impl Photon {
-    /// Create a new Photon instance with the given configuration.
-    pub async fn new(config: Config) -> Result<Self> {
-        tracing::debug!("Initializing Photon v{}", VERSION);
-        Ok(Self { config })
-    }
-
-    /// Create a new Photon instance with default configuration.
-    pub async fn with_defaults() -> Result<Self> {
-        let config = Config::load()?;
-        Self::new(config).await
-    }
-
-    /// Get a reference to the current configuration.
-    pub fn config(&self) -> &Config {
-        &self.config
-    }
-
-    /// Get the model directory path.
-    pub fn model_dir(&self) -> std::path::PathBuf {
-        self.config.model_dir()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,12 +58,5 @@ mod tests {
     #[test]
     fn test_version() {
         assert!(!VERSION.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_photon_new() {
-        let config = Config::default();
-        let photon = Photon::new(config).await.unwrap();
-        assert_eq!(photon.config().processing.parallel_workers, 4);
     }
 }

@@ -70,7 +70,8 @@ mod tests {
     #[test]
     fn test_preprocess_normalization_range() {
         // White image (255, 255, 255) -> (255/255 - 0.5) / 0.5 = 1.0
-        let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(10, 10, image::Rgb([255, 255, 255])));
+        let img =
+            DynamicImage::ImageRgb8(RgbImage::from_pixel(10, 10, image::Rgb([255, 255, 255])));
         let tensor = preprocess(&img, 224);
         let max_val = tensor.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         assert!((max_val - 1.0).abs() < 0.01);

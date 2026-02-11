@@ -34,23 +34,17 @@ impl ImageDecoder {
     }
 
     /// Decode an image from a file path with validation and timeout.
+    ///
+    /// Note: file-size validation is handled by `Validator::validate()` which runs
+    /// before decode in the pipeline. We still read file_size for the output metadata.
     pub async fn decode(&self, path: &Path) -> Result<DecodedImage, PipelineError> {
-        // Check file size first (fast validation)
-        let metadata = std::fs::metadata(path).map_err(|e| PipelineError::Decode {
-            path: path.to_path_buf(),
-            message: format!("Cannot read file: {}", e),
-        })?;
-
-        let file_size = metadata.len();
-        let max_size = self.limits.max_file_size_mb * 1024 * 1024;
-
-        if file_size > max_size {
-            return Err(PipelineError::FileTooLarge {
-                path: path.to_path_buf(),
-                size_mb: file_size / (1024 * 1024),
-                max_mb: self.limits.max_file_size_mb,
-            });
-        }
+        let file_size =
+            std::fs::metadata(path)
+                .map(|m| m.len())
+                .map_err(|e| PipelineError::Decode {
+                    path: path.to_path_buf(),
+                    message: format!("Cannot read file: {}", e),
+                })?;
 
         // Decode with timeout using spawn_blocking to avoid blocking async runtime
         let path_owned = path.to_path_buf();
