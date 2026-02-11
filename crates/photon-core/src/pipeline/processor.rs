@@ -8,7 +8,9 @@ use crate::config::Config;
 use crate::embedding::EmbeddingEngine;
 use crate::error::{PipelineError, Result};
 use crate::tagging::label_bank::LabelBank;
+use crate::tagging::neighbors::NeighborExpander;
 use crate::tagging::progressive::ProgressiveEncoder;
+use crate::tagging::relevance::{Pool, RelevanceTracker};
 use crate::tagging::seed::SeedSelector;
 use crate::tagging::text_encoder::SigLipTextEncoder;
 use crate::tagging::{TagScorer, Vocabulary};
@@ -42,7 +44,12 @@ pub struct ImageProcessor {
     discovery: FileDiscovery,
     embedding_engine: Option<Arc<EmbeddingEngine>>,
     tag_scorer: Option<Arc<RwLock<TagScorer>>>,
+    relevance_tracker: Option<RwLock<RelevanceTracker>>,
     embed_timeout_ms: u64,
+    /// Sweep interval: run pool transitions every N images.
+    sweep_interval: u64,
+    /// Whether neighbor expansion is enabled (from config).
+    neighbor_expansion: bool,
 }
 
 impl ImageProcessor {
@@ -55,7 +62,10 @@ impl ImageProcessor {
             discovery: FileDiscovery::new(config.processing.clone()),
             embedding_engine: None,
             tag_scorer: None,
+            relevance_tracker: None,
             embed_timeout_ms: config.limits.embed_timeout_ms,
+            sweep_interval: 1000,
+            neighbor_expansion: config.tagging.relevance.neighbor_expansion,
         }
     }
 
@@ -84,6 +94,9 @@ impl ImageProcessor {
     ///
     /// On subsequent runs, loads the cached label bank instantly.
     ///
+    /// If relevance pruning is enabled, also creates or loads the relevance
+    /// tracker for the three-pool system.
+    ///
     /// Follows the same opt-in pattern as `load_embedding()`.
     pub fn load_tagging(&mut self, config: &Config) -> Result<()> {
         let vocab_dir = config.vocabulary_dir();
@@ -110,6 +123,12 @@ impl ImageProcessor {
         {
             // FAST PATH: Load cached label bank (subsequent runs)
             let label_bank = LabelBank::load(&label_bank_path, vocabulary.len())?;
+
+            // Load or create relevance tracker
+            if config.tagging.relevance.enabled {
+                self.load_relevance_tracker(config, &vocabulary)?;
+            }
+
             let scorer = TagScorer::new(vocabulary, label_bank, config.tagging.clone());
             self.tag_scorer = Some(Arc::new(RwLock::new(scorer)));
         } else if config.tagging.progressive.enabled {
@@ -170,6 +189,9 @@ impl ImageProcessor {
                 let mut lock = scorer_slot.write().unwrap();
                 *lock = seed_scorer;
             }
+
+            // Note: relevance tracker not loaded for progressive path —
+            // pool assignments only make sense once the full label bank is cached.
         } else {
             // BLOCKING PATH (legacy): Encode all terms synchronously
             return self.load_tagging_blocking(config, vocabulary, &label_bank_path, &vocab_hash);
@@ -203,6 +225,11 @@ impl ImageProcessor {
         })?;
         bank.save(label_bank_path, vocab_hash)?;
 
+        // Load or create relevance tracker
+        if config.tagging.relevance.enabled {
+            self.load_relevance_tracker(config, &vocabulary)?;
+        }
+
         self.tag_scorer = Some(Arc::new(RwLock::new(TagScorer::new(
             vocabulary,
             bank,
@@ -211,9 +238,88 @@ impl ImageProcessor {
         Ok(())
     }
 
+    /// Load or create the relevance tracker.
+    fn load_relevance_tracker(
+        &mut self,
+        config: &Config,
+        vocabulary: &Vocabulary,
+    ) -> Result<()> {
+        let taxonomy_dir = config.taxonomy_dir();
+        let relevance_path = taxonomy_dir.join("relevance.json");
+
+        let tracker = if relevance_path.exists() {
+            match RelevanceTracker::load(
+                &relevance_path,
+                vocabulary,
+                config.tagging.relevance.clone(),
+            ) {
+                Ok(tracker) => {
+                    let (active, warm, cold) = tracker.pool_counts();
+                    tracing::info!(
+                        "Loaded relevance data: {} active, {} warm, {} cold",
+                        active,
+                        warm,
+                        cold
+                    );
+                    tracker
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load relevance data: {e} — starting fresh");
+                    let encoded_mask = vec![true; vocabulary.len()];
+                    RelevanceTracker::new(
+                        vocabulary.len(),
+                        &encoded_mask,
+                        config.tagging.relevance.clone(),
+                    )
+                }
+            }
+        } else {
+            tracing::info!(
+                "Relevance pruning enabled — initializing with {} active terms",
+                vocabulary.len()
+            );
+            let encoded_mask = vec![true; vocabulary.len()];
+            RelevanceTracker::new(
+                vocabulary.len(),
+                &encoded_mask,
+                config.tagging.relevance.clone(),
+            )
+        };
+
+        self.relevance_tracker = Some(RwLock::new(tracker));
+        Ok(())
+    }
+
     /// Check whether the tagging system is loaded.
     pub fn has_tagging(&self) -> bool {
         self.tag_scorer.is_some()
+    }
+
+    /// Save relevance tracking data to disk.
+    ///
+    /// Call this at the end of a batch processing run.
+    pub fn save_relevance(&self, config: &Config) -> Result<()> {
+        if let (Some(scorer_lock), Some(tracker_lock)) =
+            (&self.tag_scorer, &self.relevance_tracker)
+        {
+            let scorer = scorer_lock.read().unwrap();
+            let tracker = tracker_lock.read().unwrap();
+            let taxonomy_dir = config.taxonomy_dir();
+            std::fs::create_dir_all(&taxonomy_dir).map_err(|e| PipelineError::Model {
+                message: format!("Failed to create taxonomy dir {:?}: {}", taxonomy_dir, e),
+            })?;
+            let path = taxonomy_dir.join("relevance.json");
+            tracker.save(&path, scorer.vocabulary())?;
+            let (active, warm, cold) = tracker.pool_counts();
+            tracing::info!(
+                "Saved relevance data: {} active, {} warm, {} cold ({} images processed)",
+                active,
+                warm,
+                cold,
+                tracker.images_processed()
+            );
+        }
+        Ok(())
     }
 
     /// Process a single image through the full pipeline.
@@ -324,8 +430,62 @@ impl ImageProcessor {
         // Generate tags using embedding (Phase 4)
         let tag_start = std::time::Instant::now();
         let tags = if !options.skip_tagging {
-            match (&self.tag_scorer, &embedding) {
-                (Some(scorer_lock), emb) if !emb.is_empty() => {
+            match (&self.tag_scorer, &self.relevance_tracker, &embedding) {
+                // Pool-aware scoring (relevance pruning enabled)
+                (Some(scorer_lock), Some(tracker_lock), emb) if !emb.is_empty() => {
+                    // Phase 1: Score under READ lock (concurrent, ~2ms)
+                    let (tags, raw_hits) = {
+                        let scorer = scorer_lock.read().unwrap();
+                        let tracker = tracker_lock.read().unwrap();
+                        scorer.score_with_pools(emb, &tracker)
+                    };
+                    // Read locks dropped here
+
+                    // Phase 2: Record hits + periodic sweep under WRITE lock (brief, ~μs)
+                    {
+                        let mut tracker = tracker_lock.write().unwrap();
+                        tracker.record_hits(&raw_hits);
+
+                        // Periodic sweep + neighbor expansion
+                        if tracker.images_processed() % self.sweep_interval == 0
+                            && tracker.images_processed() > 0
+                        {
+                            let promoted = tracker.sweep();
+                            if !promoted.is_empty() && self.neighbor_expansion {
+                                let scorer = scorer_lock.read().unwrap();
+                                let siblings = NeighborExpander::expand_all(
+                                    scorer.vocabulary(),
+                                    &promoted,
+                                );
+                                let cold_siblings: Vec<usize> = siblings
+                                    .iter()
+                                    .filter(|&&i| tracker.pool(i) == Pool::Cold)
+                                    .copied()
+                                    .collect();
+                                if !cold_siblings.is_empty() {
+                                    tracker.promote_to_warm(&cold_siblings);
+                                    tracing::debug!(
+                                        "Neighbor expansion: {} promoted, {} siblings queued",
+                                        promoted.len(),
+                                        cold_siblings.len()
+                                    );
+                                }
+                            }
+                            let (active, warm, cold) = tracker.pool_counts();
+                            tracing::debug!(
+                                "Pool sweep: {} active, {} warm, {} cold",
+                                active,
+                                warm,
+                                cold
+                            );
+                        }
+                    }
+                    // Write lock dropped here
+
+                    tags
+                }
+                // No relevance tracking — score all terms (4a behavior)
+                (Some(scorer_lock), None, emb) if !emb.is_empty() => {
                     let scorer = scorer_lock.read().unwrap();
                     scorer.score(emb)
                 }

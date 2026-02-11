@@ -4,6 +4,7 @@
 //! All config structs implement `Default` with values from the blueprint.
 
 use crate::error::ConfigError;
+use crate::tagging::relevance::RelevanceConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -294,6 +295,9 @@ pub struct TaggingConfig {
 
     /// Progressive encoding settings for first-run optimization
     pub progressive: ProgressiveConfig,
+
+    /// Relevance pruning settings (three-pool system)
+    pub relevance: RelevanceConfig,
 }
 
 impl Default for TaggingConfig {
@@ -304,6 +308,7 @@ impl Default for TaggingConfig {
             max_tags: 15,
             vocabulary: VocabularyConfig::default(),
             progressive: ProgressiveConfig::default(),
+            relevance: RelevanceConfig::default(),
         }
     }
 }
@@ -543,5 +548,13 @@ mod tests {
         let config = Config::default();
         assert!(config.tagging.progressive.enabled);
         assert_eq!(config.tagging.progressive.seed_size, 2000);
+    }
+
+    #[test]
+    fn test_tagging_config_includes_relevance() {
+        let config = Config::default();
+        assert!(!config.tagging.relevance.enabled); // Off by default
+        assert_eq!(config.tagging.relevance.warm_check_interval, 100);
+        assert!(config.tagging.relevance.neighbor_expansion);
     }
 }

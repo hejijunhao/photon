@@ -31,6 +31,23 @@ impl LabelBank {
         }
     }
 
+    /// Create a label bank from a pre-computed matrix (for testing/external use).
+    pub fn from_raw(matrix: Vec<f32>, embedding_dim: usize, term_count: usize) -> Self {
+        assert_eq!(
+            matrix.len(),
+            embedding_dim * term_count,
+            "Matrix size ({}) does not match {} terms × {} dim",
+            matrix.len(),
+            term_count,
+            embedding_dim,
+        );
+        Self {
+            matrix,
+            embedding_dim,
+            term_count,
+        }
+    }
+
     /// Append another label bank's embeddings to this one.
     ///
     /// The caller must ensure vocabulary ordering matches (i.e., the appended

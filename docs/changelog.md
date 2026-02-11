@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.4](#044---2026-02-11)** — Relevance pruning: self-organizing three-pool vocabulary (Active/Warm/Cold) with WordNet neighbor expansion
 - **[0.4.3](#043---2026-02-11)** — Progressive encoding: first-run cold-start reduced from ~90min to ~30s via seed vocabulary + background chunked encoding
 - **[0.4.2](#042---2026-02-11)** — Post-fix review: invalid JSON in batch+file+LLM, empty response guards, dead field removal
 - **[0.4.1](#041---2026-02-11)** — Post-Phase-5 bug fixes: structured retry classification, async I/O, enricher counting, stdout data loss fix
@@ -16,6 +17,53 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.4] - 2026-02-11
+
+### Summary
+
+Self-organizing vocabulary with three-pool system (Active/Warm/Cold) for relevance-based scoring optimization. Terms that never match are demoted to reduce scoring cost; WordNet neighbors of active terms are promoted for deeper coverage. Per-term statistics (hit count, average confidence, last match timestamp) drive pool transitions. Relevance data persists across runs via `~/.photon/taxonomy/relevance.json`. Backward compatible — `relevance.enabled = false` (the default) gives identical behavior to Phase 4a/4b. 100 tests passing (+32 new), zero clippy warnings.
+
+### Added
+
+- **`RelevanceTracker`** (`tagging/relevance.rs`) — per-term statistics tracking with `Pool` enum (`Active`/`Warm`/`Cold`), `TermStats` (hit count, score sum, last hit timestamp), pool transition logic via `sweep()`, and JSON persistence by term name for cross-run stability
+- **`NeighborExpander`** (`tagging/neighbors.rs`) — WordNet sibling lookup via shared first hypernym; when a term is promoted to Active, its siblings are promoted to Warm for evaluation
+- **`TagScorer::score_with_pools()`** — pool-aware scoring that scores Active terms every image, Warm terms every Nth image, and skips Cold terms entirely; returns raw hits for separate recording
+- **`TagScorer::score_pool()`** — single-pool scoring with configurable pool filter
+- **`TagScorer::hits_to_tags()`** — extracted shared filter → sort → truncate helper used by both `score()` and `score_with_pools()` to prevent logic divergence
+- **`Vocabulary::parent_of()`** and **`Vocabulary::build_parent_index()`** — hypernym-based parent lookup for neighbor expansion
+- **`LabelBank::from_raw()`** — constructor for test and external use
+- **`RelevanceConfig`** — new sub-section of `TaggingConfig` with `enabled`, `warm_check_interval`, `promotion_threshold`, `active_demotion_days`, `warm_demotion_checks`, `neighbor_expansion`
+
+### Changed
+
+- **`ImageProcessor`** — added `relevance_tracker: Option<RwLock<RelevanceTracker>>`, `sweep_interval`, and `neighbor_expansion` fields; added `load_relevance_tracker()` and `save_relevance()` methods
+- **`process_with_options()` tagging stage** — rewritten with split read-lock scoring / write-lock recording pattern: scoring runs under read lock (concurrent), only the brief `record_hits()` call needs a write lock; periodic sweep + neighbor expansion inside the write lock
+- **CLI (`process.rs`)** — calls `save_relevance()` after both single-file and batch processing to persist pool state
+
+### Configuration
+
+```toml
+[tagging.relevance]
+enabled = false              # Opt-in (default off until stable)
+warm_check_interval = 100    # Score warm pool every N images
+promotion_threshold = 0.3    # Min confidence for warm → active
+active_demotion_days = 90    # Demote active terms with no hits in N days
+warm_demotion_checks = 50    # Demote warm terms after N checks with no hits
+neighbor_expansion = true    # Auto-expand WordNet siblings of promoted terms
+```
+
+### Tests
+
+100 tests passing (+32 new):
+
+- **Relevance** (20): `test_avg_confidence_zero_hits`, `test_avg_confidence_calculation`, `test_pool_serde_roundtrip`, `test_new_encoded_terms_active`, `test_new_unencoded_terms_cold`, `test_record_hits_updates_stats`, `test_record_hits_increments_image_count`, `test_sweep_demotes_stale_active`, `test_sweep_demotes_never_hit_active`, `test_sweep_promotes_warm_with_hits`, `test_sweep_returns_promoted_indices`, `test_sweep_preserves_recent_active`, `test_should_check_warm_interval`, `test_pool_counts`, `test_promote_to_warm`, `test_save_load_roundtrip`, `test_load_with_vocabulary_change`, `test_load_missing_file_error`, `test_relevance_config_defaults`
+- **Neighbors** (6): `test_find_siblings_shared_parent`, `test_find_siblings_excludes_self`, `test_find_siblings_no_hypernyms`, `test_find_siblings_different_parent`, `test_expand_all_deduplicates`, `test_expand_all_excludes_promoted`
+- **Scorer** (3): `test_hits_to_tags_filters_sorts_truncates`, `test_score_pool_filters_by_pool`, `test_score_with_pools_returns_hits`
+- **Vocabulary** (3): `test_parent_of_wordnet_term`, `test_parent_of_supplemental_term`, `test_build_parent_index`
+- **Config** (1): `test_tagging_config_includes_relevance`
 
 ---
 

@@ -158,6 +158,29 @@ impl Vocabulary {
         Self { terms, by_name }
     }
 
+    /// Get the immediate parent (first hypernym) of a term.
+    ///
+    /// Returns `None` for supplemental terms or terms without hypernyms.
+    pub fn parent_of(&self, term_index: usize) -> Option<&str> {
+        self.terms
+            .get(term_index)
+            .and_then(|t| t.hypernyms.first())
+            .map(|s| s.as_str())
+    }
+
+    /// Build a parent → children index for fast sibling lookup.
+    ///
+    /// Returns a HashMap from parent name to Vec of child term indices.
+    pub fn build_parent_index(&self) -> HashMap<String, Vec<usize>> {
+        let mut index: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, term) in self.terms.iter().enumerate() {
+            if let Some(parent) = term.hypernyms.first() {
+                index.entry(parent.clone()).or_default().push(i);
+            }
+        }
+        index
+    }
+
     /// Compute a BLAKE3 hash of all term names in order.
     ///
     /// Used for label bank cache invalidation — if the vocabulary changes,
@@ -247,6 +270,41 @@ mod tests {
         // Verify index points to correct position in the SUBSET
         assert_eq!(sub.get("cat").unwrap().name, "cat");
         assert_eq!(sub.get("car").unwrap().name, "car");
+    }
+
+    #[test]
+    fn test_parent_of_wordnet_term() {
+        let vocab = vocab_from_terms(
+            &[("dog", "animal|organism|entity")],
+            &[],
+        );
+        assert_eq!(vocab.parent_of(0), Some("animal"));
+    }
+
+    #[test]
+    fn test_parent_of_supplemental_term() {
+        let vocab = vocab_from_terms(
+            &[],
+            &[("sunset", "scene")],
+        );
+        assert_eq!(vocab.parent_of(0), None);
+    }
+
+    #[test]
+    fn test_build_parent_index() {
+        let vocab = vocab_from_terms(
+            &[
+                ("labrador", "retriever|dog"),
+                ("golden_retriever", "retriever|dog"),
+                ("persian_cat", "feline|cat"),
+            ],
+            &[],
+        );
+        let index = vocab.build_parent_index();
+        let mut retriever_children = index.get("retriever").unwrap().clone();
+        retriever_children.sort();
+        assert_eq!(retriever_children, vec![0, 1]);
+        assert_eq!(index.get("feline").unwrap(), &vec![2]);
     }
 
     #[test]

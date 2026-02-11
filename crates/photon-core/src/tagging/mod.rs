@@ -4,11 +4,14 @@
 //! between image embeddings and pre-computed text embeddings.
 
 pub mod label_bank;
+pub mod neighbors;
 pub mod progressive;
+pub mod relevance;
 pub mod scorer;
 pub mod seed;
 pub mod text_encoder;
 pub mod vocabulary;
 
+pub use relevance::{Pool, RelevanceConfig, RelevanceTracker};
 pub use scorer::TagScorer;
 pub use vocabulary::Vocabulary;

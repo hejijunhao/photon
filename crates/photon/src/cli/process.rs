@@ -296,6 +296,10 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
                 println!("{}", json);
             }
         }
+        // Save relevance tracking data for single-file mode (if enabled)
+        if let Err(e) = processor.save_relevance(&config) {
+            tracing::warn!("Failed to save relevance data: {e}");
+        }
     } else {
         // Batch processing
         let mut succeeded = 0;
@@ -422,6 +426,11 @@ pub async fn execute(args: ProcessArgs) -> anyhow::Result<()> {
                     .await;
                 log_enrichment_stats(enriched, enrich_failed);
             }
+        }
+
+        // Save relevance tracking data (if enabled)
+        if let Err(e) = processor.save_relevance(&config) {
+            tracing::warn!("Failed to save relevance data: {e}");
         }
 
         let elapsed = start_time.elapsed();
