@@ -6,6 +6,8 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.12](#0412---2026-02-11)** — Benchmark fix: fixture paths now resolve via `CARGO_MANIFEST_DIR` so all 5 benchmarks run from any working directory
+- **[0.4.11](#0411---2026-02-11)** — Final assessment: comprehensive code review (7.5/10), README config fix, test verification
 - **[0.4.10](#0410---2026-02-11)** — CI fix: replace `is_some()`+`unwrap()` with `Option::filter()` to satisfy `clippy::unnecessary_unwrap`
 - **[0.4.9](#049---2026-02-11)** — Code polishing: hot-path clone elimination, O(N×K)→O(N+K) sibling lookups, dead code removal, test hygiene
 - **[0.4.8](#048---2026-02-11)** — Benchmark fix: correct API calls for `ImageDecoder` and `ThumbnailGenerator` instance methods
@@ -23,6 +25,48 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.12] - 2026-02-11
+
+### Summary
+
+Benchmark fixture path fix. Three of five criterion benchmarks (`content_hash_blake3`, `decode_image`, `metadata_extract`) were silently skipped because they used relative paths (`tests/fixtures/images/test.png`) that only resolve from the workspace root. The benchmark binary's working directory is the crate directory (`crates/photon-core/`), so the fixtures were invisible. Fixed by resolving paths through `env!("CARGO_MANIFEST_DIR")`. All 5 benchmarks now execute. 118 tests passing, zero clippy warnings.
+
+### Fixed
+
+- **`benches/pipeline.rs` — fixture path resolution** — added `fixture_path()` helper that constructs absolute paths via `env!("CARGO_MANIFEST_DIR")` + `../../tests/fixtures/images/`; applied to `content_hash_blake3`, `decode_image`, and `metadata_extract` benchmarks
+
+### Benchmark Results (Apple Silicon)
+
+| Benchmark | Time | Input |
+|-----------|------|-------|
+| `content_hash_blake3` | ~5.0 µs | `test.png` (70 B) |
+| `perceptual_hash` | ~219 µs | Synthetic 256x256 |
+| `decode_image` | ~16.8 µs | `test.png` (70 B) |
+| `thumbnail_256px` | ~2.90 ms | Synthetic 1920x1080 |
+| `metadata_extract` | ~5.4 µs | `test.png` (70 B) |
+
+---
+
+## [0.4.11] - 2026-02-11
+
+### Summary
+
+Final comprehensive code assessment across the entire workspace. Full review of all source files in both crates (photon-core library, photon CLI), tests, CI/CD, dependencies, and documentation. Overall rating: **7.5/10** — strong architecture, solid test coverage, a few concrete gaps to address. Fixed stale config references in README (`device` and `quality` fields removed in v0.4.9 but still shown in config example). 118 tests passing, zero clippy warnings.
+
+### Fixed
+
+- **`README.md` — stale config fields** — removed `device = "cpu"` from `[embedding]` section and `quality = 80` from `[thumbnail]` section; both fields were dead code removed in v0.4.9 but still appeared in the README config example
+
+### Added
+
+- **`docs/executing/finish-testing.md` — code assessment** — comprehensive review covering architecture (9/10), code quality (8/10), error handling (9/10), testing (7/10), documentation (7/10), safety (7/10), performance (8.5/10), CI/CD (9/10), dependencies (8/10), CLI UX (7.5/10); identified 10 issues (0 critical, 3 high, 4 medium, 3 low)
+
+### Tests
+
+118 tests passing, zero clippy warnings, zero formatting violations.
 
 ---
 

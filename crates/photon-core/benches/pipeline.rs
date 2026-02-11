@@ -7,8 +7,14 @@ use image::DynamicImage;
 use photon_core::config::{LimitsConfig, ThumbnailConfig};
 use std::path::Path;
 
+fn fixture_path(name: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/images")
+        .join(name)
+}
+
 fn benchmark_content_hash(c: &mut Criterion) {
-    let path = Path::new("tests/fixtures/images/test.png");
+    let path = fixture_path("test.png");
     if !path.exists() {
         eprintln!("Skipping content_hash benchmark: test fixture not found");
         return;
@@ -16,7 +22,7 @@ fn benchmark_content_hash(c: &mut Criterion) {
 
     c.bench_function("content_hash_blake3", |b| {
         b.iter(|| {
-            let _ = photon_core::pipeline::Hasher::content_hash(black_box(path));
+            let _ = photon_core::pipeline::Hasher::content_hash(black_box(&path));
         })
     });
 }
@@ -32,7 +38,7 @@ fn benchmark_perceptual_hash(c: &mut Criterion) {
 }
 
 fn benchmark_decode(c: &mut Criterion) {
-    let path = Path::new("tests/fixtures/images/test.png");
+    let path = fixture_path("test.png");
     if !path.exists() {
         eprintln!("Skipping decode benchmark: test fixture not found");
         return;
@@ -43,7 +49,7 @@ fn benchmark_decode(c: &mut Criterion) {
 
     c.bench_function("decode_image", |b| {
         b.iter(|| {
-            let _ = rt.block_on(decoder.decode(black_box(path)));
+            let _ = rt.block_on(decoder.decode(black_box(&path)));
         })
     });
 }
@@ -60,7 +66,7 @@ fn benchmark_thumbnail(c: &mut Criterion) {
 }
 
 fn benchmark_metadata(c: &mut Criterion) {
-    let path = Path::new("tests/fixtures/images/test.png");
+    let path = fixture_path("test.png");
     if !path.exists() {
         eprintln!("Skipping metadata benchmark: test fixture not found");
         return;
@@ -68,7 +74,7 @@ fn benchmark_metadata(c: &mut Criterion) {
 
     c.bench_function("metadata_extract", |b| {
         b.iter(|| {
-            let _ = photon_core::pipeline::MetadataExtractor::extract(black_box(path));
+            let _ = photon_core::pipeline::MetadataExtractor::extract(black_box(&path));
         })
     });
 }

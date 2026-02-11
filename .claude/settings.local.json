@@ -31,7 +31,10 @@
       "Bash(cargo license:*)",
       "Bash(cargo metadata:*)",
       "Bash(done)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(file:*)",
+      "Bash(cargo outdated:*)",
+      "Bash(cargo bench:*)"
     ]
   }
 }

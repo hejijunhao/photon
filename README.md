@@ -206,12 +206,10 @@ embed_timeout_ms = 30000
 
 [embedding]
 model = "siglip-base-patch16"         # or "siglip-base-patch16-384" for higher quality
-device = "cpu"                        # "cpu", "metal" (Apple Silicon), "cuda" (NVIDIA)
 
 [thumbnail]
 enabled = true
 size = 256
-quality = 80
 
 [tagging]
 enabled = true
