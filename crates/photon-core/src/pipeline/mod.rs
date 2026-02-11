@@ -8,9 +8,7 @@
 //! - **discovery**: Find image files in directories
 //! - **validate**: Pre-processing validation
 //! - **processor**: Orchestrates the full pipeline
-//! - **channel**: Bounded channels for backpressure
 
-pub mod channel;
 pub mod decode;
 pub mod discovery;
 pub mod hash;

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo build                         # Dev build
 cargo build --release               # Release build
 cargo check                         # Type-check without building
-cargo test                          # Run all tests (50 tests across workspace)
+cargo test                          # Run all tests (120+ tests across workspace)
 cargo test -p photon-core           # Test core library only
 cargo test -p photon                # Test CLI only
 cargo test <test_name>              # Run a single test by name
@@ -82,10 +82,10 @@ When `--llm` is active, the CLI uses a **dual-stream output** model: core pipeli
 ```
 ~/.photon/
   models/
+    text_model.onnx               # Shared text encoder (at root, not in variant dir)
+    tokenizer.json                # Shared tokenizer
     siglip-base-patch16/          # Default 224px model
       visual.onnx
-      text_model.onnx
-      tokenizer.json
     siglip-base-patch16-384/      # High-quality 384px model
       visual.onnx
   vocabulary/

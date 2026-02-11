@@ -6,6 +6,9 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.9](#049---2026-02-11)** — Code polishing: hot-path clone elimination, O(N×K)→O(N+K) sibling lookups, dead code removal, test hygiene
+- **[0.4.8](#048---2026-02-11)** — Benchmark fix: correct API calls for `ImageDecoder` and `ThumbnailGenerator` instance methods
+- **[0.4.7](#047---2026-02-11)** — Polish & release: progress bar, `--skip-existing`, summary stats, error hints, benchmarks, CI/CD, MIT license
 - **[0.4.6](#046---2026-02-11)** — Housekeeping: `cargo fmt` across workspace
 - **[0.4.5](#045---2026-02-11)** — Hierarchy dedup: ancestor suppression and WordNet path annotation for cleaner tag output
 - **[0.4.4](#044---2026-02-11)** — Relevance pruning: self-organizing three-pool vocabulary (Active/Warm/Cold) with WordNet neighbor expansion
@@ -19,6 +22,72 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.9] - 2026-02-11
+
+### Summary
+
+Code polishing pass addressing all 9 open items from the code assessment (`docs/executing/code-assessment.md`). Two performance fixes on the tagging hot path (clone elimination, O(N×K) → O(N+K) sibling lookups), dead code and config removal (~120 LOC), test hygiene improvements, and CLI control flow cleanup. 118 tests passing, zero clippy warnings.
+
+### Fixed
+
+- **`scorer.rs` — hot-path clone eliminated** — `hits_to_tags()` now takes `&[(usize, f32)]` instead of `Vec<(usize, f32)>`, removing a per-image `.clone()` of the full hit vector in `score_with_pools()`
+- **`neighbors.rs` — O(N×K) → O(N+K) sibling lookups** — `expand_all()` now builds the parent index once via `vocabulary.build_parent_index()` and uses it for all K promoted terms, instead of linearly scanning 68K terms per promotion
+- **`CLAUDE.md` — corrected Data Directory Layout** — `text_model.onnx` and `tokenizer.json` are at the models root (`~/.photon/models/`), not inside the variant subdirectory; also updated stale test count (50 → 120+)
+- **`scorer.rs`, `neighbors.rs` — test tempdir leak** — replaced `std::mem::forget(dir)` with returning `TempDir` alongside results so temporary directories are properly cleaned up after each test run
+- **`process.rs` — enricher created once** — `create_enricher()` was called at 4 separate branch sites; now created once before branching and consumed via `Option::take()` in the executing branch
+
+### Removed
+
+- **`ThumbnailConfig.quality`** — dead config field; the `image` crate v0.25's WebP encoder only supports lossless encoding with no quality parameter
+- **`EmbeddingConfig.device`** — dead config field; ONNX Runtime auto-selects execution providers at build time, this field was never referenced
+- **`pipeline/channel.rs`** — `PipelineStage` and `bounded_channel` were defined and tested but never used by production code (116 LOC, 2 tests removed)
+
+### Changed
+
+- **`models.rs` — `reqwest::Client` reuse** — single client instance shared across all 3 HuggingFace download calls for HTTP connection pooling
+
+### Tests
+
+118 tests passing (−2 from removed `channel.rs` dead code), zero clippy warnings.
+
+---
+
+## [0.4.8] - 2026-02-11
+
+### Summary
+
+Benchmark compilation fix. Two benchmarks (`decode_image`, `thumbnail_256px`) called `ImageDecoder::decode` and `ThumbnailGenerator::generate` as static methods, but both are instance methods that take `&self`. Fixed by constructing instances with default configs and bridging async via `tokio::runtime::Runtime::block_on()` for the async decode path. Zero logic changes to library code.
+
+### Fixed
+
+- **`benchmark_decode`** — `ImageDecoder::decode(path)` → construct `ImageDecoder::new(LimitsConfig::default())` + `rt.block_on(decoder.decode(path))` to match the actual `async fn(&self, &Path)` signature
+- **`benchmark_thumbnail`** — `ThumbnailGenerator::generate(&img, 256, 80)` → construct `ThumbnailGenerator::new(ThumbnailConfig::default())` + `generator.generate(&img)` to match the actual `fn(&self, &DynamicImage)` signature
+
+---
+
+## [0.4.7] - 2026-02-11
+
+### Summary
+
+Production UX polish and release infrastructure. Adds an indicatif progress bar for batch processing, working `--skip-existing` flag (BLAKE3 hash-based dedup against existing output), formatted summary statistics on stderr, contextual error hints for every error variant, criterion benchmarks for core pipeline stages, GitHub Actions CI/CD (check + lint + multi-platform release), and MIT license file. 120 tests passing, zero clippy warnings.
+
+### Added
+
+- **Progress bar** (`indicatif`) — spinner + elapsed + bar + rate display during batch processing; placed in CLI crate (not core) as a terminal UI concern
+- **`--skip-existing` flag** — reads existing output file, extracts `content_hash` values into a `HashSet`, skips already-processed images; appends to output file instead of truncating; handles both JSONL and `OutputRecord` dual-stream formats
+- **Summary statistics** — formatted table printed to stderr after batch processing showing succeeded/failed/skipped counts, duration, rate (img/sec), and throughput (MB/sec); failed/skipped rows omitted when zero
+- **`PipelineError::hint()` / `PhotonError::hint()`** — contextual recovery suggestions per error variant (e.g. "Run `photon models download`" for model errors, "Check your API key" for 401/403 LLM errors, format list for unsupported formats)
+- **Criterion benchmarks** (`crates/photon-core/benches/pipeline.rs`) — `content_hash_blake3`, `perceptual_hash`, `decode_image`, `thumbnail_256px`, `metadata_extract`; gracefully skip when fixtures missing
+- **GitHub Actions CI** (`.github/workflows/ci.yml`) — `cargo check` + `cargo test` on macOS-14 ARM and ubuntu-latest; `cargo fmt --check` + `cargo clippy -D warnings` lint job
+- **GitHub Actions Release** (`.github/workflows/release.yml`) — triggered on `v*` tags; builds release binaries for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`; packages as `.tar.gz`; creates GitHub Release with auto-generated notes
+- **`LICENSE-MIT`** — MIT license text (workspace declares `MIT OR Apache-2.0`)
+
+### Changed
+
+- **`README.md`** — LLM section no longer says "coming soon", added LLM usage examples, updated test count to 120+, added benchmark instructions, added Hyperbolic to provider list
 
 ---
 

@@ -19,7 +19,11 @@
       "Bash(git push:*)",
       "Bash(find:*)",
       "Bash(cd:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(git commit:*)",
+      "Bash(wc:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(cargo doc:*)"
     ]
   }
 }

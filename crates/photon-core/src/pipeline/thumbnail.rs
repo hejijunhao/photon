@@ -69,7 +69,6 @@ mod tests {
             enabled: true,
             size: 128,
             format: "webp".to_string(),
-            quality: 80,
         };
         let generator = ThumbnailGenerator::new(config);
 
@@ -88,7 +87,6 @@ mod tests {
             enabled: false,
             size: 128,
             format: "webp".to_string(),
-            quality: 80,
         };
         let generator = ThumbnailGenerator::new(config);
 
@@ -104,7 +102,6 @@ mod tests {
             enabled: true,
             size: 64,
             format: "webp".to_string(),
-            quality: 80,
         };
         let generator = ThumbnailGenerator::new(config);
 

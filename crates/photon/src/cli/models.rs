@@ -76,6 +76,9 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
             let selection = 1;
             tracing::info!("Downloading Base (224) variant (default)...");
 
+            // Create HTTP client once for all downloads (connection pool reuse)
+            let client = reqwest::Client::new();
+
             let variants_to_download: Vec<usize> = match selection {
                 1 => vec![0],
                 2 => vec![1],
@@ -105,7 +108,7 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
                 tracing::info!("  Source: {}", url);
                 tracing::info!("  Destination: {:?}", dest);
 
-                download_file(&url, &dest).await?;
+                download_file(&client, &url, &dest).await?;
 
                 let file_size = std::fs::metadata(&dest)?.len();
                 tracing::info!(
@@ -128,7 +131,7 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
                 tracing::info!("Downloading text encoder (fp32)...");
                 tracing::info!("  Source: {}", url);
                 tracing::info!("  Destination: {:?}", text_dest);
-                download_file(&url, &text_dest).await?;
+                download_file(&client, &url, &text_dest).await?;
                 let file_size = std::fs::metadata(&text_dest)?.len();
                 tracing::info!(
                     "  Text encoder complete ({:.1} MB)",
@@ -148,7 +151,7 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
                 tracing::info!("Downloading tokenizer...");
                 tracing::info!("  Source: {}", url);
                 tracing::info!("  Destination: {:?}", tok_dest);
-                download_file(&url, &tok_dest).await?;
+                download_file(&client, &url, &tok_dest).await?;
                 tracing::info!("  Tokenizer complete");
             }
 
@@ -265,11 +268,10 @@ fn install_vocabulary(config: &Config) -> anyhow::Result<()> {
 }
 
 /// Download a file from a URL to a local path, streaming to disk.
-async fn download_file(url: &str, dest: &Path) -> anyhow::Result<()> {
+async fn download_file(client: &reqwest::Client, url: &str, dest: &Path) -> anyhow::Result<()> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
-    let client = reqwest::Client::new();
     let response = client
         .get(url)
         .send()

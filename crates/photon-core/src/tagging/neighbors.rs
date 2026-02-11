@@ -3,7 +3,7 @@
 //! When a term is promoted to active, its WordNet siblings (terms sharing
 //! the same immediate parent) are promoted to warm for evaluation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::vocabulary::Vocabulary;
 
@@ -16,29 +16,46 @@ impl NeighborExpander {
     /// Returns indices of sibling terms in the vocabulary, excluding the input term.
     /// Supplemental terms (no hypernyms) return an empty vec.
     pub fn find_siblings(vocabulary: &Vocabulary, term_index: usize) -> Vec<usize> {
+        let parent_index = vocabulary.build_parent_index();
+        Self::find_siblings_indexed(vocabulary, term_index, &parent_index)
+    }
+
+    /// Find siblings using a precomputed parent → children index.
+    ///
+    /// Use this when looking up siblings for multiple terms to avoid rebuilding
+    /// the index each time (O(K) lookups instead of O(N*K) linear scans).
+    fn find_siblings_indexed(
+        vocabulary: &Vocabulary,
+        term_index: usize,
+        parent_index: &HashMap<String, Vec<usize>>,
+    ) -> Vec<usize> {
         let parent = match vocabulary.parent_of(term_index) {
             Some(p) => p,
             None => return vec![],
         };
 
-        vocabulary
-            .all_terms()
-            .iter()
-            .enumerate()
-            .filter(|(i, t)| {
-                *i != term_index && t.hypernyms.first().map(|h| h.as_str()) == Some(parent)
+        parent_index
+            .get(parent)
+            .map(|children| {
+                children
+                    .iter()
+                    .filter(|&&i| i != term_index)
+                    .copied()
+                    .collect()
             })
-            .map(|(i, _)| i)
-            .collect()
+            .unwrap_or_default()
     }
 
     /// Batch expansion: find siblings for multiple promoted terms.
     ///
+    /// Builds the parent index once and uses it for all lookups (O(N + K)
+    /// instead of O(N*K) where N = vocabulary size, K = promoted terms).
     /// Deduplicates results and excludes the promoted terms themselves.
     pub fn expand_all(vocabulary: &Vocabulary, promoted_indices: &[usize]) -> Vec<usize> {
+        let parent_index = vocabulary.build_parent_index();
         let mut siblings = HashSet::new();
         for &idx in promoted_indices {
-            for sib in Self::find_siblings(vocabulary, idx) {
+            for sib in Self::find_siblings_indexed(vocabulary, idx, &parent_index) {
                 siblings.insert(sib);
             }
         }
@@ -55,7 +72,9 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn test_vocab() -> Vocabulary {
+    /// Returns TempDir alongside Vocabulary so the directory stays alive
+    /// for the test's duration and is cleaned up automatically.
+    fn test_vocab() -> (Vocabulary, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let nouns_path = dir.path().join("wordnet_nouns.txt");
         let mut f = std::fs::File::create(&nouns_path).unwrap();
@@ -70,15 +89,13 @@ mod tests {
         let mut f = std::fs::File::create(&supp_path).unwrap();
         writeln!(f, "sunset\tscene").unwrap();
 
-        // Keep tempdir alive by leaking it (test only)
-        let path = dir.path().to_path_buf();
-        std::mem::forget(dir);
-        Vocabulary::load(&path).unwrap()
+        let vocab = Vocabulary::load(dir.path()).unwrap();
+        (vocab, dir)
     }
 
     #[test]
     fn test_find_siblings_shared_parent() {
-        let vocab = test_vocab();
+        let (vocab, _dir) = test_vocab();
         // labrador_retriever (0) → siblings: golden (1), curly_coated (2)
         let mut siblings = NeighborExpander::find_siblings(&vocab, 0);
         siblings.sort();
@@ -87,14 +104,14 @@ mod tests {
 
     #[test]
     fn test_find_siblings_excludes_self() {
-        let vocab = test_vocab();
+        let (vocab, _dir) = test_vocab();
         let siblings = NeighborExpander::find_siblings(&vocab, 0);
         assert!(!siblings.contains(&0));
     }
 
     #[test]
     fn test_find_siblings_no_hypernyms() {
-        let vocab = test_vocab();
+        let (vocab, _dir) = test_vocab();
         // sunset (5) is supplemental — no hypernyms
         let siblings = NeighborExpander::find_siblings(&vocab, 5);
         assert!(siblings.is_empty());
@@ -102,7 +119,7 @@ mod tests {
 
     #[test]
     fn test_find_siblings_different_parent() {
-        let vocab = test_vocab();
+        let (vocab, _dir) = test_vocab();
         // persian_cat (3) → sibling: siamese_cat (4), not any retrievers
         let siblings = NeighborExpander::find_siblings(&vocab, 3);
         assert_eq!(siblings, vec![4]);
@@ -110,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_expand_all_deduplicates() {
-        let vocab = test_vocab();
+        let (vocab, _dir) = test_vocab();
         // Promote both labrador (0) and golden (1) — curly_coated (2) is sibling of both
         let mut expanded = NeighborExpander::expand_all(&vocab, &[0, 1]);
         expanded.sort();
@@ -120,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_expand_all_excludes_promoted() {
-        let vocab = test_vocab();
+        let (vocab, _dir) = test_vocab();
         let expanded = NeighborExpander::expand_all(&vocab, &[0]);
         // golden (1) and curly_coated (2) but not labrador (0)
         assert!(!expanded.contains(&0));

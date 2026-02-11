@@ -220,9 +220,6 @@ pub struct EmbeddingConfig {
     /// Image input size — derived from model variant, not set directly.
     /// 224 for base, 384 for 384 variant.
     pub image_size: u32,
-
-    /// Inference device ("cpu", "metal", "cuda")
-    pub device: String,
 }
 
 impl Default for EmbeddingConfig {
@@ -230,7 +227,6 @@ impl Default for EmbeddingConfig {
         Self {
             model: "siglip-base-patch16".to_string(),
             image_size: 224,
-            device: "cpu".to_string(),
         }
     }
 }
@@ -258,9 +254,6 @@ pub struct ThumbnailConfig {
 
     /// Output format
     pub format: String,
-
-    /// Quality (0-100)
-    pub quality: u8,
 }
 
 impl Default for ThumbnailConfig {
@@ -269,7 +262,6 @@ impl Default for ThumbnailConfig {
             enabled: true,
             size: 256,
             format: "webp".to_string(),
-            quality: 80,
         }
     }
 }

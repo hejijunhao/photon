@@ -37,8 +37,8 @@ image.jpg ──▶ Photon ──▶ { embedding, tags, metadata, hash, thumbnai
 - **EXIF Extraction** — Camera, GPS coordinates, datetime, ISO, aperture, focal length
 - **Content Hashing** — BLAKE3 cryptographic hash + perceptual hash for deduplication and similarity
 - **Thumbnails** — WebP generation with configurable size and quality
-- **LLM Descriptions** *(coming soon)* — BYOK enrichment via Ollama, Anthropic, OpenAI
-- **Batch Processing** — Parallel workers with backpressure to handle large collections
+- **LLM Descriptions** — BYOK enrichment via Ollama, Anthropic, OpenAI, Hyperbolic
+- **Batch Processing** — Parallel workers with progress bar and skip-existing support
 - **Single Binary** — No Python, no Docker, no runtime dependencies
 
 ## Quick Start
@@ -78,6 +78,22 @@ photon process ./photos/ --output results.jsonl --skip-existing
 
 # Higher quality embeddings (384px model, slower but more detailed)
 photon process image.jpg --quality high
+```
+
+### LLM Descriptions (BYOK)
+
+```bash
+# Local via Ollama
+photon process image.jpg --llm ollama --llm-model llama3.2-vision
+
+# Anthropic API
+photon process image.jpg --llm anthropic --llm-model claude-sonnet-4-5-20250929
+
+# OpenAI API
+photon process image.jpg --llm openai --llm-model gpt-4o-mini
+
+# Batch with LLM enrichment
+photon process ./photos/ --format jsonl --output results.jsonl --llm anthropic
 ```
 
 ### Control What Gets Generated
@@ -121,7 +137,7 @@ Photon runs a sequential pipeline where each stage is independent and optional:
 
  ... ──▶ ┌──────────┐ ┌─────────────┐        Output
          │Zero-Shot │▶│  LLM Enrich │──▶  Structured JSON
-         │  Tags    │ │ (coming soon)│     { embedding, tags,
+         │  Tags    │ │  (BYOK)     │     { embedding, tags,
          │ (SigLIP) │ │             │       metadata, hash, ... }
          └──────────┘ └─────────────┘
 ```
@@ -296,8 +312,9 @@ photon/
 | Foundation (CLI, config, logging) | Complete |
 | Image pipeline (decode, EXIF, hashing, thumbnails) | Complete |
 | SigLIP embedding (768-dim vectors via ONNX) | Complete |
-| Zero-shot tagging (68K vocabulary) | Complete |
-| LLM enrichment (BYOK descriptions) | In progress |
+| Zero-shot tagging (68K vocabulary, self-organizing pools) | Complete |
+| LLM enrichment (BYOK descriptions) | Complete |
+| Polish & release (progress bar, skip-existing, benchmarks) | Complete |
 
 ## Requirements
 
@@ -310,9 +327,10 @@ photon/
 Contributions are welcome. Please open an issue to discuss significant changes before submitting a PR.
 
 ```bash
-cargo test              # Run all tests (32 across workspace)
+cargo test              # Run all tests (120+ across workspace)
 cargo clippy            # Lint
 cargo fmt               # Format
+cargo bench -p photon-core  # Run benchmarks
 ```
 
 ## License

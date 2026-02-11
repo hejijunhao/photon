@@ -33,3 +33,6 @@ futures-util.workspace = true
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# Progress bar (Phase 6)
+indicatif = "0.17"

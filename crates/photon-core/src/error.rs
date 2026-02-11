@@ -110,6 +110,55 @@ pub enum PipelineError {
     FileNotFound(PathBuf),
 }
 
+impl PipelineError {
+    /// Return a user-friendly hint for recovering from this error.
+    pub fn hint(&self) -> Option<&'static str> {
+        match self {
+            PipelineError::Decode { .. } => {
+                Some("The file may be corrupted or in an unsupported format.")
+            }
+            PipelineError::Model { .. } => {
+                Some("Run `photon models download` to install required models.")
+            }
+            PipelineError::Llm { status_code, .. } => match status_code {
+                Some(401) | Some(403) => {
+                    Some("Check your API key. Set the appropriate environment variable (e.g. ANTHROPIC_API_KEY).")
+                }
+                Some(429) => Some("Rate limited by the provider. Try again later or reduce --parallel."),
+                Some(500..=599) => Some("The LLM provider is experiencing issues. Try again later."),
+                _ => Some("Check your LLM provider configuration with `photon config show`."),
+            },
+            PipelineError::Timeout { .. } => {
+                Some("Try increasing the timeout in config.toml or use a simpler model.")
+            }
+            PipelineError::FileTooLarge { .. } => {
+                Some("Increase `limits.max_file_size_mb` in config, or resize the image.")
+            }
+            PipelineError::ImageTooLarge { .. } => {
+                Some("Increase `limits.max_image_dimension` in config, or resize the image.")
+            }
+            PipelineError::UnsupportedFormat { .. } => {
+                Some("Supported formats: JPEG, PNG, WebP, GIF, TIFF, BMP, AVIF.")
+            }
+            PipelineError::FileNotFound(_) => Some("Check the file path and try again."),
+            _ => None,
+        }
+    }
+}
+
+impl PhotonError {
+    /// Return a user-friendly hint for recovering from this error.
+    pub fn hint(&self) -> Option<&'static str> {
+        match self {
+            PhotonError::Config(_) => {
+                Some("Run `photon config show` to see current configuration.")
+            }
+            PhotonError::Pipeline(e) => e.hint(),
+            _ => None,
+        }
+    }
+}
+
 /// Convenience type alias for Photon results.
 pub type Result<T> = std::result::Result<T, PhotonError>;
 

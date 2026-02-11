@@ -56,16 +56,16 @@ impl TagScorer {
     /// Convert raw (term_index, confidence) hits into filtered, sorted, truncated tags.
     ///
     /// Shared by `score()` and `score_with_pools()` to avoid logic divergence.
-    fn hits_to_tags(&self, hits: Vec<(usize, f32)>) -> Vec<Tag> {
+    fn hits_to_tags(&self, hits: &[(usize, f32)]) -> Vec<Tag> {
         let terms = self.vocabulary.all_terms();
         let mut tags: Vec<Tag> = hits
-            .into_iter()
+            .iter()
             .filter(|(_, conf)| *conf >= self.config.min_confidence)
             .map(|(idx, confidence)| {
-                let term = &terms[idx];
+                let term = &terms[*idx];
                 Tag {
                     name: term.display_name.clone(),
-                    confidence,
+                    confidence: *confidence,
                     category: term.category.clone(),
                     path: None,
                 }
@@ -110,7 +110,7 @@ impl TagScorer {
             scores.push((i, confidence));
         }
 
-        self.hits_to_tags(scores)
+        self.hits_to_tags(&scores)
     }
 
     /// Score against terms in a specific pool only.
@@ -168,7 +168,7 @@ impl TagScorer {
         }
 
         // 3. Convert to tags using shared helper
-        let tags = self.hits_to_tags(all_hits.clone());
+        let tags = self.hits_to_tags(&all_hits);
 
         (tags, all_hits)
     }
@@ -204,7 +204,10 @@ mod tests {
     }
 
     /// Helper: create a minimal scorer with synthetic embeddings for testing.
-    fn test_scorer(n_terms: usize, dim: usize) -> (TagScorer, Vec<f32>) {
+    ///
+    /// Returns the TempDir alongside the scorer so it stays alive for the
+    /// test's duration and is cleaned up when the test completes.
+    fn test_scorer(n_terms: usize, dim: usize) -> (TagScorer, Vec<f32>, tempfile::TempDir) {
         use std::io::Write;
 
         // Create vocabulary
@@ -243,18 +246,15 @@ mod tests {
         let mut image_emb = vec![0.0f32; dim];
         image_emb[0] = 1.0;
 
-        // Keep tempdir alive
-        std::mem::forget(dir);
-
-        (scorer, image_emb)
+        (scorer, image_emb, dir)
     }
 
     #[test]
     fn test_hits_to_tags_filters_sorts_truncates() {
-        let (scorer, _) = test_scorer(5, 4);
+        let (scorer, _, _dir) = test_scorer(5, 4);
 
         let hits = vec![(0, 0.9), (1, 0.3), (2, 0.7), (3, 0.1), (4, 0.5)];
-        let tags = scorer.hits_to_tags(hits);
+        let tags = scorer.hits_to_tags(&hits);
 
         // Should be sorted descending by confidence
         assert!(tags[0].confidence >= tags[1].confidence);
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_score_pool_filters_by_pool() {
-        let (scorer, image_emb) = test_scorer(3, 4);
+        let (scorer, image_emb, _dir) = test_scorer(3, 4);
 
         let mask = vec![true, true, true]; // All encoded
         let config = RelevanceConfig::default();
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_score_with_pools_returns_hits() {
-        let (scorer, image_emb) = test_scorer(3, 4);
+        let (scorer, image_emb, _dir) = test_scorer(3, 4);
 
         let mask = vec![true, true, true];
         let tracker = RelevanceTracker::new(3, &mask, RelevanceConfig::default());
