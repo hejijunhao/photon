@@ -38,7 +38,8 @@
       "Bash(b3sum:*)",
       "Bash(cargo install:*)",
       "WebFetch(domain:docs.rs)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(sort:*)"
     ]
   }
 }

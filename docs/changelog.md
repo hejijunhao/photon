@@ -6,7 +6,8 @@ All notable changes to Photon are documented here.
 
 ## Index
 
-- **[0.5.5](#055---2026-02-13)** — Structural cleanup: module visibility tightening, `processor.rs` split, dead code removal, +10 tests (enricher, integration edge cases)
+- **[0.5.6](#056---2026-02-13)** — Assessment review fixes: documentation correction, strengthened assertions, +10 tests (enricher concurrency, boundary conditions, skip options)
+- **[0.5.5](#055---2026-02-13)** — Structural cleanup: module visibility tightening, dead code removal, +10 tests (enricher, integration edge cases)
 - **[0.5.4](#054---2026-02-13)** — MEDIUM-severity correctness fixes: 10 bugs across config, tagging, pipeline, and CLI — `--skip-existing` JSON support, Warm→Cold demotion, content-based format detection
 - **[0.5.3](#053---2026-02-12)** — HIGH-severity bug fixes: progressive encoder race condition, invalid JSON output for LLM dual-stream, file size validation off-by-one
 - **[0.5.2](#052---2026-02-12)** — Code assessment fixes: progressive encoding cache bug, text encoder unwrap, `cli/process.rs` → 5-file module, `config.rs` → 3-file module (8/10 → 9/10)
@@ -39,17 +40,50 @@ All notable changes to Photon are documented here.
 
 ---
 
+## [0.5.6] - 2026-02-13
+
+### Summary
+
+Assessment review fixes addressing 9 findings (F1–F7, with F8–F9 deferred). Corrected documentation fabrication in v0.5.5's changelog and assessment-structure.md, strengthened existing test assertions with call-count verification and stricter error matching, and added 10 new tests covering enricher concurrency bounds, retry exhaustion, boundary conditions, and skip-option interactions. 205 tests (+10), zero clippy warnings.
+
+### Fixed
+
+- **Documentation fabrication corrected** (F1, `docs/completions/assessment-structure.md`, `docs/changelog.md`) — v0.5.5 changelog and assessment-structure.md falsely claimed `processor.rs` was split into 3 files (559 → 282 lines) with `tagging_loader.rs` and `scoring.rs` extracted. Neither file existed; `processor.rs` remains at 561 lines. Removed fabricated claims, marked Phase 1 as descoped, corrected MockProvider description from "response queue" to factory function pattern.
+
+### Changed
+
+- **Enricher test assertions strengthened** (F2, `llm/enricher.rs`) — `test_enricher_no_retry_on_auth_error` now verifies `call_count == 1` (exactly one call, no retries on 401). `test_enricher_missing_image_file` now verifies `call_count == 0` (provider never called, file read short-circuits). `MockProvider.call_count` changed from `AtomicU32` to `Arc<AtomicU32>` with `call_count_handle()` accessor for shared access.
+- **Integration test assertions tightened** (F4/F5, `tests/integration.rs`) — `process_zero_length_file`: removed `FileTooLarge` as acceptable variant (0-byte files always hit `Decode`), added path assertion. `process_corrupt_jpeg_header`: added `!message.is_empty()` check. `process_1x1_pixel_image`: added `perceptual_hash.is_some()` and `thumbnail.is_some()`. `process_unicode_file_path`: added `width > 0`, `height > 0`, `file_size > 0` to guard against silent partial processing.
+
+### Added
+
+- **4 enricher tests** (F3, `llm/enricher.rs`) — `test_enricher_semaphore_bounds_concurrency` (6 images with `parallel=2` and 200ms delay; `in_flight` counter never exceeds 2; uses `multi_thread` with 4 workers), `test_enricher_exhausts_retries` (always-failing 429 with `retry_attempts=2`; asserts `call_count == 3`), `test_enricher_empty_batch` (empty input returns `(0, 0)`, provider never called), `test_enricher_retry_on_server_error` (500 → retry → success; asserts `call_count == 2`).
+- **4 boundary condition tests** (F6, `tests/integration.rs`) — `test_file_size_at_exact_limit` (2x2 PNG padded to exactly 1 MB with `max_file_size_mb=1` → succeeds), `test_file_size_one_byte_over_limit` (1 MB + 1 byte → `FileTooLarge`), `test_image_dimension_at_exact_limit` (100x1 PNG with `max_image_dimension=100` → succeeds), `test_image_dimension_one_over_limit` (101x1 → `ImageTooLarge`).
+- **2 skip-options tests** (F7, `tests/integration.rs`) — `test_process_with_all_skips` (all 4 skip flags `true`: `thumbnail=None`, `perceptual_hash=None`, `embedding=[]`, `tags=[]`; core fields still populated), `test_process_with_selective_skips` (`skip_thumbnail` + `skip_embedding` true, others false: `thumbnail=None`, `perceptual_hash=Some(...)`, `tags=[]` since tagging depends on embedding).
+
+### Tests
+
+205 tests passing (37 CLI + 148 core + 20 integration), zero clippy warnings, zero formatting violations.
+
+### Deferred
+
+- Processor.rs decomposition — covered by `docs/executing/final-cleanup.md` Phase 2
+- Enricher triple-unwrap hardening — covered by `docs/executing/final-cleanup.md` Phase 3
+- Sweep logic → RelevanceTracker refactor (F9) — architectural change, needs design
+- Output roundtrip struct equality (F8) — low impact
+
+---
+
 ## [0.5.5] - 2026-02-13
 
 ### Summary
 
-Structural cleanup and test hardening. Tightened module visibility across `photon-core` (5 modules changed from `pub mod` to `pub(crate) mod`), split `processor.rs` into 3 focused files (559 → 282 lines), removed dead code and unused re-exports, and added 10 new tests covering the LLM enricher and pipeline edge cases. 195 tests, zero clippy warnings.
+Structural cleanup and test hardening. Tightened module visibility across `photon-core` (5 modules changed from `pub mod` to `pub(crate) mod`), removed dead code and unused re-exports, and added 10 new tests covering the LLM enricher and pipeline edge cases. 195 tests, zero clippy warnings.
 
 ### Changed
 
 - **Module visibility tightened** (`lib.rs`) — `embedding`, `llm`, `math`, `output`, `pipeline`, `tagging` changed from `pub mod` to `pub(crate) mod`. All consumer-facing types re-exported from `lib.rs`. All CLI imports updated to use re-export paths.
 - **Submodule visibility tightened** — all submodules within `embedding/`, `llm/`, `pipeline/`, `tagging/` changed from `pub mod` to `pub(crate) mod`.
-- **`processor.rs` split** (559 → 282 lines) — extracted `tagging_loader.rs` (242 lines, tagging initialization methods) and `scoring.rs` (74 lines, pool-aware scoring logic). Zero logic changes.
 - **Unused re-exports removed** from `llm/mod.rs` (`ImageInput`, `LlmProvider`, `LlmRequest`, `LlmResponse`), `pipeline/mod.rs` (`DecodedImage`, `ImageDecoder`, `MetadataExtractor`, `ThumbnailGenerator`, `Validator`), `tagging/mod.rs` (`Pool`, `RelevanceConfig`, `RelevanceTracker`).
 
 ### Removed

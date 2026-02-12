@@ -193,10 +193,12 @@ mod tests {
     struct MockProvider {
         /// Factory that produces a response for each call index.
         response_fn: Box<dyn Fn(u32) -> Result<LlmResponse, PipelineError> + Send + Sync>,
-        /// Tracks how many times `generate` was called.
-        call_count: AtomicU32,
+        /// Tracks how many times `generate` was called (shared for post-hoc assertions).
+        call_count: Arc<AtomicU32>,
         /// Optional delay before returning.
         delay: Option<Duration>,
+        /// Tracks concurrent in-flight calls (for semaphore testing).
+        in_flight: Option<(Arc<AtomicU32>, Arc<AtomicU32>)>, // (in_flight, max_concurrent)
     }
 
     impl MockProvider {
@@ -211,8 +213,9 @@ mod tests {
                         latency_ms: 10,
                     })
                 }),
-                call_count: AtomicU32::new(0),
+                call_count: Arc::new(AtomicU32::new(0)),
                 delay: None,
+                in_flight: None,
             }
         }
 
@@ -225,8 +228,9 @@ mod tests {
                         status_code,
                     })
                 }),
-                call_count: AtomicU32::new(0),
+                call_count: Arc::new(AtomicU32::new(0)),
                 delay: None,
+                in_flight: None,
             }
         }
 
@@ -254,14 +258,20 @@ mod tests {
                         })
                     }
                 }),
-                call_count: AtomicU32::new(0),
+                call_count: Arc::new(AtomicU32::new(0)),
                 delay: None,
+                in_flight: None,
             }
         }
 
         fn with_delay(mut self, delay: Duration) -> Self {
             self.delay = Some(delay);
             self
+        }
+
+        /// Get a shared handle to the call counter (clone before moving provider).
+        fn call_count_handle(&self) -> Arc<AtomicU32> {
+            self.call_count.clone()
         }
     }
 
@@ -277,10 +287,18 @@ mod tests {
 
         async fn generate(&self, _request: &LlmRequest) -> Result<LlmResponse, PipelineError> {
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+            if let Some((ref in_flight, ref max_concurrent)) = self.in_flight {
+                let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                max_concurrent.fetch_max(current, Ordering::SeqCst);
+            }
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }
-            (self.response_fn)(idx)
+            let result = (self.response_fn)(idx);
+            if let Some((ref in_flight, _)) = self.in_flight {
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+            }
+            result
         }
 
         fn timeout(&self) -> Duration {
@@ -385,6 +403,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_enricher_no_retry_on_auth_error() {
         let provider = MockProvider::failing(Some(401), "unauthorized");
+        let call_count = provider.call_count_handle();
         let options = EnrichOptions {
             retry_attempts: 3, // Would retry 3 times if retryable
             retry_delay_ms: 10,
@@ -395,6 +414,8 @@ mod tests {
 
         assert_eq!(succeeded, 0);
         assert_eq!(failed, 1);
+        // Verify provider was called exactly once (no retries on 401)
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
         match &results[0] {
             EnrichResult::Failure(_, msg) => {
                 assert!(msg.contains("unauthorized"));
@@ -460,6 +481,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_enricher_missing_image_file() {
         let provider = MockProvider::success("should not reach");
+        let call_count = provider.call_count_handle();
         let mut image = fixture_image("ghost.jpg");
         image.file_path = PathBuf::from("/nonexistent/path/ghost.jpg");
         let images = vec![image];
@@ -467,12 +489,127 @@ mod tests {
 
         assert_eq!(succeeded, 0);
         assert_eq!(failed, 1);
+        // Verify provider was never called (file read fails first)
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
         match &results[0] {
             EnrichResult::Failure(path, msg) => {
                 assert_eq!(path, &PathBuf::from("/nonexistent/path/ghost.jpg"));
                 assert!(msg.contains("Failed to read image"), "Got: {msg}");
             }
             EnrichResult::Success(_) => panic!("Expected file-not-found failure"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_enricher_semaphore_bounds_concurrency() {
+        // Track concurrent in-flight calls to verify semaphore enforcement.
+        let in_flight = Arc::new(AtomicU32::new(0));
+        let max_concurrent = Arc::new(AtomicU32::new(0));
+
+        let provider = MockProvider {
+            response_fn: Box::new(|_| {
+                Ok(LlmResponse {
+                    text: "described".to_string(),
+                    model: "mock-v1".to_string(),
+                    tokens_used: Some(10),
+                    latency_ms: 5,
+                })
+            }),
+            call_count: Arc::new(AtomicU32::new(0)),
+            delay: Some(Duration::from_millis(200)), // Hold permit for 200ms
+            in_flight: Some((in_flight.clone(), max_concurrent.clone())),
+        };
+
+        // 6 images, parallel=2 → at most 2 concurrent calls
+        let images: Vec<_> = (0..6).map(|_| fixture_image("beach.jpg")).collect();
+        let options = EnrichOptions {
+            parallel: 2,
+            timeout_ms: 5000,
+            retry_attempts: 0,
+            retry_delay_ms: 10,
+        };
+        let (_, (succeeded, failed)) = run_enricher(provider, &images, options).await;
+
+        assert_eq!(succeeded, 6);
+        assert_eq!(failed, 0);
+        assert!(
+            max_concurrent.load(Ordering::SeqCst) <= 2,
+            "semaphore violated: max concurrent was {}",
+            max_concurrent.load(Ordering::SeqCst)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_enricher_exhausts_retries() {
+        // Always fail with 429 (retryable) — should exhaust all retries.
+        let provider = MockProvider::failing(Some(429), "rate limited");
+        let call_count = provider.call_count_handle();
+        let options = EnrichOptions {
+            parallel: 4,
+            timeout_ms: 5000,
+            retry_attempts: 2,
+            retry_delay_ms: 10,
+        };
+        let images = vec![fixture_image("beach.jpg")];
+        let (results, (succeeded, failed)) = run_enricher(provider, &images, options).await;
+
+        assert_eq!(succeeded, 0);
+        assert_eq!(failed, 1);
+        // 1 initial + 2 retries = 3 total calls
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
+        match &results[0] {
+            EnrichResult::Failure(_, msg) => {
+                assert!(msg.contains("rate limited"), "Got: {msg}");
+            }
+            EnrichResult::Success(_) => panic!("Expected retry exhaustion failure"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_enricher_empty_batch() {
+        let provider = MockProvider::success("should not reach");
+        let call_count = provider.call_count_handle();
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let results_clone = results.clone();
+        let enricher = Enricher::new(Box::new(provider), fast_options());
+        let (succeeded, failed) = enricher
+            .enrich_batch(&[], move |r| {
+                results_clone.lock().unwrap().push(r);
+            })
+            .await;
+
+        assert_eq!(succeeded, 0);
+        assert_eq!(failed, 0);
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+        assert!(results.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_enricher_retry_on_server_error() {
+        // First call: 500 (retryable), second call: success
+        let provider = MockProvider::fail_then_succeed(
+            Some(500),
+            "internal server error",
+            "Recovered after 500.",
+        );
+        let call_count = provider.call_count_handle();
+        let options = EnrichOptions {
+            retry_attempts: 1,
+            retry_delay_ms: 10,
+            ..fast_options()
+        };
+        let images = vec![fixture_image("beach.jpg")];
+        let (results, (succeeded, failed)) = run_enricher(provider, &images, options).await;
+
+        assert_eq!(succeeded, 1);
+        assert_eq!(failed, 0);
+        // 1 initial (500) + 1 retry (success) = 2 total calls
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        match &results[0] {
+            EnrichResult::Success(patch) => {
+                assert_eq!(patch.description, "Recovered after 500.");
+            }
+            EnrichResult::Failure(_, msg) => panic!("Expected success after 500 retry: {msg}"),
         }
     }
 }

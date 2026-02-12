@@ -337,13 +337,12 @@ async fn process_zero_length_file() {
     let result = processor.process(empty_file.as_path()).await;
 
     assert!(result.is_err(), "empty file should fail to process");
-    // Should get a decode error (not a panic)
+    // 0-byte file fails in magic byte check (too small) → Decode error
     match result {
-        Err(PhotonError::Pipeline(PipelineError::Decode { .. })) => {}
-        Err(PhotonError::Pipeline(PipelineError::FileTooLarge { .. })) => {
-            // Also acceptable — 0 bytes is technically below limit but invalid
+        Err(PhotonError::Pipeline(PipelineError::Decode { path, .. })) => {
+            assert_eq!(path, empty_file);
         }
-        other => panic!("expected Decode or FileTooLarge error, got: {other:?}"),
+        other => panic!("expected Decode error, got: {other:?}"),
     }
 }
 
@@ -370,6 +369,10 @@ async fn process_1x1_pixel_image() {
     assert_eq!(result.height, 1);
     assert_eq!(result.format, "png");
     assert!(!result.content_hash.is_empty());
+    // Pipeline should still generate perceptual hash for tiny images
+    assert!(result.perceptual_hash.is_some());
+    // Thumbnail should be generated (even if trivially small)
+    assert!(result.thumbnail.is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -389,8 +392,12 @@ async fn process_corrupt_jpeg_header() {
 
     assert!(result.is_err(), "corrupt JPEG should fail");
     match result {
-        Err(PhotonError::Pipeline(PipelineError::Decode { path, .. })) => {
+        Err(PhotonError::Pipeline(PipelineError::Decode { path, message })) => {
             assert_eq!(path, corrupt_path);
+            assert!(
+                !message.is_empty(),
+                "decode error should contain a descriptive message"
+            );
         }
         other => panic!("expected Decode error, got: {other:?}"),
     }
@@ -419,6 +426,9 @@ async fn process_unicode_file_path() {
     assert_eq!(result.file_name, "日本語テスト画像.png");
     assert_eq!(result.format, "png");
     assert!(!result.content_hash.is_empty());
+    assert!(result.width > 0);
+    assert!(result.height > 0);
+    assert!(result.file_size > 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -446,5 +456,225 @@ async fn deterministic_content_hash() {
     assert_eq!(
         result1.perceptual_hash, result2.perceptual_hash,
         "perceptual hash should be deterministic across runs"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Boundary: file size at exact limit (F6)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_file_size_at_exact_limit() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let img_path = dir.path().join("at_limit.png");
+
+    // Create a minimal valid PNG, then pad to exactly max_file_size_mb * 1024 * 1024 bytes
+    let img = image::RgbImage::new(2, 2);
+    img.save(&img_path).expect("save PNG");
+
+    let mut config = Config::default();
+    // Use 1 MB limit for test speed
+    config.limits.max_file_size_mb = 1;
+    let target_size = 1u64 * 1024 * 1024; // exactly 1 MB
+
+    // Pad file to exactly the limit
+    let current_size = std::fs::metadata(&img_path).unwrap().len();
+    if current_size < target_size {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&img_path)
+            .unwrap();
+        use std::io::Write;
+        let padding = vec![0u8; (target_size - current_size) as usize];
+        file.write_all(&padding).unwrap();
+    }
+    assert_eq!(std::fs::metadata(&img_path).unwrap().len(), target_size);
+
+    let processor = ImageProcessor::new(&config);
+    let result = processor.process(img_path.as_path()).await;
+
+    assert!(
+        result.is_ok(),
+        "file at exact size limit should succeed, got: {result:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Boundary: file size one byte over limit (F6)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_file_size_one_byte_over_limit() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let img_path = dir.path().join("over_limit.png");
+
+    let img = image::RgbImage::new(2, 2);
+    img.save(&img_path).expect("save PNG");
+
+    let mut config = Config::default();
+    config.limits.max_file_size_mb = 1;
+    let target_size = 1u64 * 1024 * 1024 + 1; // 1 byte over
+
+    let current_size = std::fs::metadata(&img_path).unwrap().len();
+    if current_size < target_size {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&img_path)
+            .unwrap();
+        use std::io::Write;
+        let padding = vec![0u8; (target_size - current_size) as usize];
+        file.write_all(&padding).unwrap();
+    }
+    assert_eq!(std::fs::metadata(&img_path).unwrap().len(), target_size);
+
+    let processor = ImageProcessor::new(&config);
+    let result = processor.process(img_path.as_path()).await;
+
+    match result {
+        Err(PhotonError::Pipeline(PipelineError::FileTooLarge { max_mb, .. })) => {
+            assert_eq!(max_mb, 1);
+        }
+        other => panic!("expected FileTooLarge, got: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Boundary: image dimension at exact limit (F6)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_image_dimension_at_exact_limit() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let img_path = dir.path().join("dim_at_limit.png");
+
+    // Create image at exactly the dimension limit
+    let img = image::RgbImage::new(100, 1);
+    img.save(&img_path).expect("save PNG");
+
+    let mut config = Config::default();
+    config.limits.max_image_dimension = 100;
+
+    let processor = ImageProcessor::new(&config);
+    let result = processor.process(img_path.as_path()).await;
+
+    assert!(
+        result.is_ok(),
+        "image at exact dimension limit should succeed, got: {result:?}"
+    );
+    let result = result.unwrap();
+    assert_eq!(result.width, 100);
+    assert_eq!(result.height, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Boundary: image dimension one pixel over limit (F6)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_image_dimension_one_over_limit() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let img_path = dir.path().join("dim_over_limit.png");
+
+    // Create image 1px over the dimension limit
+    let img = image::RgbImage::new(101, 1);
+    img.save(&img_path).expect("save PNG");
+
+    let mut config = Config::default();
+    config.limits.max_image_dimension = 100;
+
+    let processor = ImageProcessor::new(&config);
+    let result = processor.process(img_path.as_path()).await;
+
+    match result {
+        Err(PhotonError::Pipeline(PipelineError::ImageTooLarge {
+            width,
+            height,
+            max_dim,
+            ..
+        })) => {
+            assert_eq!(width, 101);
+            assert_eq!(height, 1);
+            assert_eq!(max_dim, 100);
+        }
+        other => panic!("expected ImageTooLarge, got: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProcessOptions: all skips enabled (F7)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_process_with_all_skips() {
+    let config = Config::default();
+    let processor = ImageProcessor::new(&config);
+
+    let options = ProcessOptions {
+        skip_thumbnail: true,
+        skip_perceptual_hash: true,
+        skip_embedding: true,
+        skip_tagging: true,
+    };
+
+    let result = processor
+        .process_with_options(fixture("beach.jpg").as_path(), &options)
+        .await
+        .expect("processing with all skips should succeed");
+
+    // Core pipeline still runs: decode, EXIF, content hash
+    assert!(!result.content_hash.is_empty());
+    assert!(result.width > 0);
+    assert!(result.height > 0);
+    assert!(result.file_size > 0);
+
+    // All optional stages skipped
+    assert!(result.thumbnail.is_none(), "thumbnail should be skipped");
+    assert!(
+        result.perceptual_hash.is_none(),
+        "perceptual hash should be skipped"
+    );
+    assert!(result.embedding.is_empty(), "embedding should be empty");
+    assert!(result.tags.is_empty(), "tags should be empty");
+}
+
+// ---------------------------------------------------------------------------
+// ProcessOptions: selective skips (F7)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_process_with_selective_skips() {
+    let config = Config::default();
+    let processor = ImageProcessor::new(&config);
+
+    let options = ProcessOptions {
+        skip_thumbnail: true,
+        skip_perceptual_hash: false,
+        skip_embedding: true,
+        skip_tagging: false, // tagging depends on embedding → should produce no tags
+    };
+
+    let result = processor
+        .process_with_options(fixture("beach.jpg").as_path(), &options)
+        .await
+        .expect("processing with selective skips should succeed");
+
+    // Core fields always populated
+    assert!(!result.content_hash.is_empty());
+    assert!(result.width > 0);
+
+    // Thumbnail skipped
+    assert!(result.thumbnail.is_none(), "thumbnail should be skipped");
+
+    // Perceptual hash NOT skipped
+    assert!(
+        result.perceptual_hash.is_some(),
+        "perceptual hash should be generated"
+    );
+
+    // Embedding skipped → tags empty (no input for tagging)
+    assert!(result.embedding.is_empty(), "embedding should be empty");
+    assert!(
+        result.tags.is_empty(),
+        "tags should be empty without embedding"
     );
 }
