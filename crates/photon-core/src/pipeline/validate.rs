@@ -35,11 +35,11 @@ impl Validator {
             message: format!("Cannot read metadata: {}", e),
         })?;
 
-        let size_mb = metadata.len() / (1024 * 1024);
-        if size_mb > self.limits.max_file_size_mb {
+        let max_bytes = self.limits.max_file_size_mb * 1024 * 1024;
+        if metadata.len() > max_bytes {
             return Err(PipelineError::FileTooLarge {
                 path: path.to_path_buf(),
-                size_mb,
+                size_mb: metadata.len() / (1024 * 1024),
                 max_mb: self.limits.max_file_size_mb,
             });
         }

@@ -46,7 +46,7 @@ impl ProgressiveEncoder {
         cache_path: PathBuf,
         vocab_hash: String,
         chunk_size: usize,
-    ) -> Result<TagScorer, PipelineError> {
+    ) -> Result<(), PipelineError> {
         // 1. Create seed vocabulary + label bank (SYNCHRONOUS)
         let seed_vocab = full_vocabulary.subset(&seed_indices);
         let seed_bank = LabelBank::encode_all(&seed_vocab, &text_encoder, 64)?;
@@ -70,7 +70,21 @@ impl ProgressiveEncoder {
             if let Err(e) = seed_scorer.label_bank().save(&cache_path, &vocab_hash) {
                 tracing::error!("Failed to save label bank cache: {e}");
             }
-            return Ok(seed_scorer);
+            let mut lock = scorer_slot
+                .write()
+                .expect("TagScorer lock poisoned during seed installation");
+            *lock = seed_scorer;
+            return Ok(());
+        }
+
+        // Install seed scorer BEFORE spawning background task.
+        // The background task reads from scorer_slot to clone the running label bank;
+        // without this, it could race against the caller and read an empty scorer.
+        {
+            let mut lock = scorer_slot
+                .write()
+                .expect("TagScorer lock poisoned during seed installation");
+            *lock = seed_scorer;
         }
 
         // 3. Spawn background encoding task
@@ -90,7 +104,7 @@ impl ProgressiveEncoder {
             Self::background_encode(ctx, remaining, total_terms).await;
         });
 
-        Ok(seed_scorer)
+        Ok(())
     }
 
     async fn background_encode(

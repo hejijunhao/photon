@@ -157,26 +157,38 @@ async fn process_single(mut ctx: ProcessContext, args: &ProcessArgs) -> anyhow::
         let core_record = OutputRecord::Core(Box::new(result.clone()));
 
         if let Some(ref output_path) = args.output {
+            // File output — use write_all() for a proper JSON array (or JSONL lines)
             let file = File::create(output_path)?;
             let mut writer =
                 photon_core::OutputWriter::new(BufWriter::new(file), ctx.output_format, false);
-            writer.write(&core_record)?;
 
-            // Run enrichment for single file
+            let mut all_records: Vec<OutputRecord> = vec![core_record];
             if let Some(enricher) = ctx.enricher.take() {
                 let patches = run_enrichment_collect(enricher, vec![result]).await?;
-                for record in &patches {
-                    writer.write(record)?;
-                }
+                all_records.extend(patches);
             }
+            writer.write_all(&all_records)?;
             writer.flush()?;
             tracing::info!("Output written to {:?}", output_path);
         } else {
             // Stdout
-            println!("{}", serde_json::to_string_pretty(&core_record)?);
-
-            if let Some(enricher) = ctx.enricher.take() {
-                run_enrichment_stdout(enricher, &[result], true).await?;
+            match args.format {
+                OutputFormat::Json => {
+                    // JSON: collect enrichment, emit combined array
+                    let mut all_records: Vec<OutputRecord> = vec![core_record];
+                    if let Some(enricher) = ctx.enricher.take() {
+                        let patches = run_enrichment_collect(enricher, vec![result]).await?;
+                        all_records.extend(patches);
+                    }
+                    println!("{}", serde_json::to_string_pretty(&all_records)?);
+                }
+                OutputFormat::Jsonl => {
+                    // JSONL: stream core record, then enrichment patches
+                    println!("{}", serde_json::to_string(&core_record)?);
+                    if let Some(enricher) = ctx.enricher.take() {
+                        run_enrichment_stdout(enricher, &[result], false).await?;
+                    }
+                }
             }
         }
     } else {

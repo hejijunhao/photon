@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.5.3](#053---2026-02-12)** — HIGH-severity bug fixes: progressive encoder race condition, invalid JSON output for LLM dual-stream, file size validation off-by-one
 - **[0.5.2](#052---2026-02-12)** — Code assessment fixes: progressive encoding cache bug, text encoder unwrap, `cli/process.rs` → 5-file module, `config.rs` → 3-file module (8/10 → 9/10)
 - **[0.5.1](#051---2026-02-12)** — Interactive CLI hardening: 28 unit tests, `unsafe set_var` elimination, `toml_edit` comment-preserving config, output path validation, recursive async → loop
 - **[0.5.0](#050---2026-02-12)** — Interactive CLI: guided mode via bare `photon` invocation — 8-step process wizard, model management, LLM setup, config viewer, custom theme
@@ -33,6 +34,24 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.5.3] - 2026-02-12
+
+### Summary
+
+HIGH-severity bug fixes from the code assessment review. Fixed a race condition in progressive encoding that could corrupt the label bank cache, and invalid JSON output when using `--llm` with JSON format. Also fixed a minor file size validation off-by-one (downgraded from HIGH to LOW). 164 tests, zero clippy warnings.
+
+### Fixed
+
+- **Progressive encoder race condition** (`tagging/progressive.rs`, `pipeline/processor.rs`) — `start()` spawned a background task that read from `scorer_slot` before the caller could install the seed scorer, risking a vocabulary/bank dimension mismatch on multi-threaded runtimes. The corrupted state would persist to the label bank cache. Seed scorer is now installed inside `start()` *before* `tokio::spawn`; return type changed from `Result<TagScorer>` to `Result<()>`. Caller-side installation in `processor.rs` removed.
+- **JSON + LLM stdout emits invalid output** (`cli/process/batch.rs`, `cli/process/mod.rs`) — batch mode printed a JSON array of core records followed by loose enrichment JSON objects — unparseable by any consumer. Single-file mode had the same pattern (sequential `writer.write()` calls producing concatenated JSON objects). Both paths now collect enrichment via `run_enrichment_collect()` and emit a single combined JSON array. JSONL streaming paths unchanged (already correct). File output switched to `write_all()` for proper array wrapping.
+- **File size validation off-by-one** (`pipeline/validate.rs`) — integer division `len() / (1024*1024) > limit` truncated, allowing files up to ~1 MB over the limit. Changed to exact byte comparison `len() > limit * 1024 * 1024`. Downgraded from HIGH to LOW — practical impact negligible with default 100 MB limit.
+
+### Tests
+
+164 tests passing (31 CLI + 123 core + 10 integration), zero clippy warnings, zero formatting violations.
 
 ---
 

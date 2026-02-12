@@ -180,20 +180,26 @@ pub async fn process_batch(
             && matches!(args.format, OutputFormat::Json)
         {
             if ctx.llm_enabled {
-                // JSON array to stdout with OutputRecord::Core wrappers
-                let core_records: Vec<OutputRecord> = results
+                // JSON array to stdout — combine core + enrichment in single array
+                let mut all_records: Vec<OutputRecord> = results
                     .iter()
                     .map(|r| OutputRecord::Core(Box::new(r.clone())))
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&core_records)?);
+
+                if let Some(enricher) = ctx.enricher.take() {
+                    let patches = run_enrichment_collect(enricher, results.clone()).await?;
+                    all_records.extend(patches);
+                }
+
+                println!("{}", serde_json::to_string_pretty(&all_records)?);
             } else {
                 // JSON array to stdout (non-LLM batch)
                 println!("{}", serde_json::to_string_pretty(&results)?);
             }
         }
 
-        // LLM enrichment for stdout streaming (JSON and JSONL)
-        if ctx.llm_enabled && args.output.is_none() {
+        // LLM enrichment for JSONL stdout streaming (JSON handled in combined array above)
+        if matches!(args.format, OutputFormat::Jsonl) && ctx.llm_enabled && args.output.is_none() {
             if let Some(enricher) = ctx.enricher.take() {
                 run_enrichment_stdout(enricher, &results, false).await?;
             }

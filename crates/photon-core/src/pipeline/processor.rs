@@ -176,7 +176,7 @@ impl ImageProcessor {
                 message: format!("Failed to create taxonomy dir {:?}: {}", taxonomy_dir, e),
             })?;
 
-            let seed_scorer = ProgressiveEncoder::start(
+            ProgressiveEncoder::start(
                 vocabulary,
                 text_encoder,
                 config.tagging.clone(),
@@ -186,14 +186,6 @@ impl ImageProcessor {
                 vocab_hash,
                 config.tagging.progressive.chunk_size,
             )?;
-
-            // Install the seed scorer
-            {
-                let mut lock = scorer_slot
-                    .write()
-                    .expect("TagScorer lock poisoned during seed installation");
-                *lock = seed_scorer;
-            }
 
             // Note: relevance tracker not loaded for progressive path —
             // pool assignments only make sense once the full label bank is cached.
