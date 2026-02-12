@@ -9,9 +9,6 @@
 use image::DynamicImage;
 use ndarray::Array4;
 
-/// SigLIP input image size (square).
-pub const SIGLIP_IMAGE_SIZE: u32 = 224;
-
 /// Number of color channels (RGB).
 const CHANNELS: usize = 3;
 

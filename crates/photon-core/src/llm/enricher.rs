@@ -176,3 +176,303 @@ async fn enrich_single(
 
     EnrichResult::Failure(image.file_path.clone(), last_error)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::PipelineError;
+    use crate::llm::provider::{LlmProvider, LlmRequest, LlmResponse};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+
+    /// A configurable mock LLM provider for testing enricher behavior.
+    ///
+    /// Each call to `generate()` invokes the response factory with the current
+    /// call index, allowing callers to return different results per attempt.
+    struct MockProvider {
+        /// Factory that produces a response for each call index.
+        response_fn: Box<dyn Fn(u32) -> Result<LlmResponse, PipelineError> + Send + Sync>,
+        /// Tracks how many times `generate` was called.
+        call_count: AtomicU32,
+        /// Optional delay before returning.
+        delay: Option<Duration>,
+    }
+
+    impl MockProvider {
+        fn success(text: &str) -> Self {
+            let text = text.to_string();
+            Self {
+                response_fn: Box::new(move |_| {
+                    Ok(LlmResponse {
+                        text: text.clone(),
+                        model: "mock-v1".to_string(),
+                        tokens_used: Some(42),
+                        latency_ms: 10,
+                    })
+                }),
+                call_count: AtomicU32::new(0),
+                delay: None,
+            }
+        }
+
+        fn failing(status_code: Option<u16>, message: &str) -> Self {
+            let message = message.to_string();
+            Self {
+                response_fn: Box::new(move |_| {
+                    Err(PipelineError::Llm {
+                        message: message.clone(),
+                        status_code,
+                    })
+                }),
+                call_count: AtomicU32::new(0),
+                delay: None,
+            }
+        }
+
+        /// First call returns an error, subsequent calls succeed.
+        fn fail_then_succeed(
+            status_code: Option<u16>,
+            error_msg: &str,
+            success_text: &str,
+        ) -> Self {
+            let error_msg = error_msg.to_string();
+            let success_text = success_text.to_string();
+            Self {
+                response_fn: Box::new(move |idx| {
+                    if idx == 0 {
+                        Err(PipelineError::Llm {
+                            message: error_msg.clone(),
+                            status_code,
+                        })
+                    } else {
+                        Ok(LlmResponse {
+                            text: success_text.clone(),
+                            model: "mock-v1".to_string(),
+                            tokens_used: Some(20),
+                            latency_ms: 50,
+                        })
+                    }
+                }),
+                call_count: AtomicU32::new(0),
+                delay: None,
+            }
+        }
+
+        fn with_delay(mut self, delay: Duration) -> Self {
+            self.delay = Some(delay);
+            self
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for MockProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
+
+        async fn generate(&self, _request: &LlmRequest) -> Result<LlmResponse, PipelineError> {
+            let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+            if let Some(delay) = self.delay {
+                tokio::time::sleep(delay).await;
+            }
+            (self.response_fn)(idx)
+        }
+
+        fn timeout(&self) -> Duration {
+            Duration::from_secs(60)
+        }
+    }
+
+    /// Create a minimal `ProcessedImage` pointing to a real fixture file.
+    fn fixture_image(name: &str) -> ProcessedImage {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/images")
+            .join(name);
+        ProcessedImage {
+            file_path: path,
+            file_name: name.to_string(),
+            content_hash: format!("hash_{name}"),
+            width: 100,
+            height: 100,
+            format: "jpeg".to_string(),
+            file_size: 1000,
+            embedding: vec![],
+            exif: None,
+            tags: vec![],
+            description: None,
+            thumbnail: None,
+            perceptual_hash: None,
+        }
+    }
+
+    /// Collect all `EnrichResult`s into a vec via the callback.
+    async fn run_enricher(
+        provider: MockProvider,
+        images: &[ProcessedImage],
+        options: EnrichOptions,
+    ) -> (Vec<EnrichResult>, (usize, usize)) {
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let results_clone = results.clone();
+        let enricher = Enricher::new(Box::new(provider), options);
+        let counts = enricher
+            .enrich_batch(images, move |r| {
+                results_clone.lock().unwrap().push(r);
+            })
+            .await;
+        let results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+        (results, counts)
+    }
+
+    fn fast_options() -> EnrichOptions {
+        EnrichOptions {
+            parallel: 4,
+            timeout_ms: 5000,
+            retry_attempts: 0,
+            retry_delay_ms: 10,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_enricher_basic_success() {
+        let provider = MockProvider::success("A beautiful beach scene.");
+        let images = vec![fixture_image("beach.jpg")];
+        let (results, (succeeded, failed)) = run_enricher(provider, &images, fast_options()).await;
+
+        assert_eq!(succeeded, 1);
+        assert_eq!(failed, 0);
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            EnrichResult::Success(patch) => {
+                assert_eq!(patch.description, "A beautiful beach scene.");
+                assert_eq!(patch.content_hash, "hash_beach.jpg");
+                assert_eq!(patch.llm_model, "mock-v1");
+            }
+            EnrichResult::Failure(path, msg) => {
+                panic!("Expected success, got failure for {path:?}: {msg}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_enricher_retry_on_transient_error() {
+        // First call: 429 (retryable), second call: success
+        let provider =
+            MockProvider::fail_then_succeed(Some(429), "rate limited", "Recovered after retry.");
+        // Allow 1 retry with minimal backoff
+        let options = EnrichOptions {
+            retry_attempts: 1,
+            retry_delay_ms: 10,
+            ..fast_options()
+        };
+        let images = vec![fixture_image("beach.jpg")];
+        let (results, (succeeded, failed)) = run_enricher(provider, &images, options).await;
+
+        assert_eq!(succeeded, 1);
+        assert_eq!(failed, 0);
+        match &results[0] {
+            EnrichResult::Success(patch) => {
+                assert_eq!(patch.description, "Recovered after retry.");
+            }
+            EnrichResult::Failure(_, msg) => panic!("Expected success after retry: {msg}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_enricher_no_retry_on_auth_error() {
+        let provider = MockProvider::failing(Some(401), "unauthorized");
+        let options = EnrichOptions {
+            retry_attempts: 3, // Would retry 3 times if retryable
+            retry_delay_ms: 10,
+            ..fast_options()
+        };
+        let images = vec![fixture_image("beach.jpg")];
+        let (results, (succeeded, failed)) = run_enricher(provider, &images, options).await;
+
+        assert_eq!(succeeded, 0);
+        assert_eq!(failed, 1);
+        match &results[0] {
+            EnrichResult::Failure(_, msg) => {
+                assert!(msg.contains("unauthorized"));
+            }
+            EnrichResult::Success(_) => panic!("Expected auth failure"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_enricher_timeout() {
+        // Provider sleeps longer than the enricher's per-request timeout
+        let provider = MockProvider::success("too slow").with_delay(Duration::from_secs(5));
+        let options = EnrichOptions {
+            timeout_ms: 50, // 50ms timeout — provider sleeps 5s
+            retry_attempts: 0,
+            ..fast_options()
+        };
+        let images = vec![fixture_image("beach.jpg")];
+        let (results, (succeeded, failed)) = run_enricher(provider, &images, options).await;
+
+        assert_eq!(succeeded, 0);
+        assert_eq!(failed, 1);
+        match &results[0] {
+            EnrichResult::Failure(_, msg) => {
+                assert!(msg.contains("Timeout"), "Expected timeout, got: {msg}");
+            }
+            EnrichResult::Success(_) => panic!("Expected timeout failure"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_enricher_batch_partial_failure() {
+        // Provider succeeds for all calls, but one image has a nonexistent path
+        // (file read fails before the provider is ever called)
+        let provider = MockProvider::success("described");
+        let images = vec![
+            fixture_image("beach.jpg"),
+            {
+                let mut img = fixture_image("nonexistent.jpg");
+                img.file_path = PathBuf::from("/tmp/definitely_does_not_exist.jpg");
+                img
+            },
+            fixture_image("car.jpg"),
+        ];
+        let (results, (succeeded, failed)) = run_enricher(provider, &images, fast_options()).await;
+
+        assert_eq!(succeeded, 2);
+        assert_eq!(failed, 1);
+        assert_eq!(results.len(), 3);
+
+        let successes: Vec<_> = results
+            .iter()
+            .filter(|r| matches!(r, EnrichResult::Success(_)))
+            .collect();
+        let failures: Vec<_> = results
+            .iter()
+            .filter(|r| matches!(r, EnrichResult::Failure(..)))
+            .collect();
+        assert_eq!(successes.len(), 2);
+        assert_eq!(failures.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_enricher_missing_image_file() {
+        let provider = MockProvider::success("should not reach");
+        let mut image = fixture_image("ghost.jpg");
+        image.file_path = PathBuf::from("/nonexistent/path/ghost.jpg");
+        let images = vec![image];
+        let (results, (succeeded, failed)) = run_enricher(provider, &images, fast_options()).await;
+
+        assert_eq!(succeeded, 0);
+        assert_eq!(failed, 1);
+        match &results[0] {
+            EnrichResult::Failure(path, msg) => {
+                assert_eq!(path, &PathBuf::from("/nonexistent/path/ghost.jpg"));
+                assert!(msg.contains("Failed to read image"), "Got: {msg}");
+            }
+            EnrichResult::Success(_) => panic!("Expected file-not-found failure"),
+        }
+    }
+}

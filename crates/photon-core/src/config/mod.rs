@@ -63,7 +63,7 @@ impl Config {
     /// Load configuration from a specific file path.
     pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
         config.validate()?;
         Ok(config)
     }

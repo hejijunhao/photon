@@ -170,25 +170,17 @@ fn show_config(config: &Config) -> anyhow::Result<()> {
 fn llm_summary(config: &Config) -> String {
     let mut providers = Vec::new();
 
-    if let Some(ref c) = config.llm.ollama {
-        if c.enabled {
-            providers.push("Ollama");
-        }
+    if config.llm.ollama.is_some() {
+        providers.push("Ollama");
     }
-    if let Some(ref c) = config.llm.anthropic {
-        if c.enabled {
-            providers.push("Anthropic");
-        }
+    if config.llm.anthropic.is_some() {
+        providers.push("Anthropic");
     }
-    if let Some(ref c) = config.llm.openai {
-        if c.enabled {
-            providers.push("OpenAI");
-        }
+    if config.llm.openai.is_some() {
+        providers.push("OpenAI");
     }
-    if let Some(ref c) = config.llm.hyperbolic {
-        if c.enabled {
-            providers.push("Hyperbolic");
-        }
+    if config.llm.hyperbolic.is_some() {
+        providers.push("Hyperbolic");
     }
 
     if providers.is_empty() {
@@ -201,7 +193,7 @@ fn llm_summary(config: &Config) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use photon_core::config::{AnthropicConfig, HyperbolicConfig, OllamaConfig, OpenAiConfig};
+    use photon_core::config::{AnthropicConfig, OllamaConfig, OpenAiConfig};
     use std::io::{self, ErrorKind};
 
     // ── handle_interrupt tests ──────────────────────────────────────────
@@ -241,7 +233,6 @@ mod tests {
     fn llm_summary_anthropic_enabled() {
         let mut config = Config::default();
         config.llm.anthropic = Some(AnthropicConfig {
-            enabled: true,
             api_key: "sk-test".to_string(),
             model: "claude-sonnet-4-20250514".to_string(),
         });
@@ -252,17 +243,14 @@ mod tests {
     fn llm_summary_multiple_providers_enabled() {
         let mut config = Config::default();
         config.llm.anthropic = Some(AnthropicConfig {
-            enabled: true,
             api_key: "sk-test".to_string(),
             model: "claude-sonnet-4-20250514".to_string(),
         });
         config.llm.ollama = Some(OllamaConfig {
-            enabled: true,
             endpoint: "http://localhost:11434".to_string(),
             model: "llava".to_string(),
         });
         config.llm.openai = Some(OpenAiConfig {
-            enabled: true,
             api_key: "sk-test".to_string(),
             model: "gpt-4o".to_string(),
         });
@@ -271,19 +259,9 @@ mod tests {
     }
 
     #[test]
-    fn llm_summary_provider_present_but_disabled() {
-        let mut config = Config::default();
-        config.llm.anthropic = Some(AnthropicConfig {
-            enabled: false,
-            api_key: "sk-test".to_string(),
-            model: "claude-sonnet-4-20250514".to_string(),
-        });
-        config.llm.hyperbolic = Some(HyperbolicConfig {
-            enabled: false,
-            endpoint: "https://api.hyperbolic.xyz/v1".to_string(),
-            api_key: "sk-test".to_string(),
-            model: "meta-llama/Llama-3.2-11B-Vision-Instruct".to_string(),
-        });
+    fn llm_summary_provider_none_means_not_configured() {
+        let config = Config::default();
+        // Default LlmConfig has all providers as None
         assert_eq!(llm_summary(&config), "none configured");
     }
 }

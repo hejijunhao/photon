@@ -8,10 +8,10 @@ pub mod types;
 pub use types::{LlmProvider, OutputFormat, Quality};
 
 use clap::Args;
-use photon_core::llm::Enricher;
-use photon_core::output::OutputFormat as CoreOutputFormat;
-use photon_core::types::OutputRecord;
-use photon_core::{Config, ImageProcessor, ProcessOptions};
+use photon_core::{
+    Config, Enricher, ImageProcessor, OutputFormat as CoreOutputFormat, OutputRecord,
+    ProcessOptions,
+};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;

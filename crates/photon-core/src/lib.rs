@@ -30,23 +30,24 @@
 //! }
 //! ```
 
-// Module declarations
+// Module declarations — public modules have re-exported consumer types
 pub mod config;
-pub mod embedding;
+pub(crate) mod embedding;
 pub mod error;
-pub mod llm;
-pub mod math;
-pub mod output;
-pub mod pipeline;
-pub mod tagging;
+pub(crate) mod llm;
+pub(crate) mod math;
+pub(crate) mod output;
+pub(crate) mod pipeline;
+pub(crate) mod tagging;
 pub mod types;
 
 // Re-exports for convenient access
 pub use config::Config;
 pub use embedding::EmbeddingEngine;
 pub use error::{ConfigError, PhotonError, PipelineError, PipelineResult, Result};
+pub use llm::{EnrichOptions, EnrichResult, Enricher, LlmProviderFactory};
 pub use output::{OutputFormat, OutputWriter};
-pub use pipeline::{ImageProcessor, ProcessOptions};
+pub use pipeline::{DiscoveredFile, FileDiscovery, Hasher, ImageProcessor, ProcessOptions};
 pub use types::{EnrichmentPatch, ExifData, OutputRecord, ProcessedImage, ProcessingStats, Tag};
 
 /// Library version.

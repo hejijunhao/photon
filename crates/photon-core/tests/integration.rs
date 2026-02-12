@@ -7,11 +7,9 @@
 //!
 //! All tests use the shared fixtures at `tests/fixtures/images/`.
 
-use photon_core::config::Config;
-use photon_core::pipeline::DiscoveredFile;
 use photon_core::{
-    ImageProcessor, OutputFormat, OutputRecord, OutputWriter, PhotonError, PipelineError,
-    ProcessOptions, ProcessedImage,
+    Config, DiscoveredFile, ImageProcessor, OutputFormat, OutputRecord, OutputWriter, PhotonError,
+    PipelineError, ProcessOptions, ProcessedImage,
 };
 use std::path::{Path, PathBuf};
 
@@ -322,6 +320,105 @@ async fn output_roundtrip_jsonl() {
         }
         other => panic!("expected Core records, got: {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: zero-length file
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn process_zero_length_file() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let empty_file = dir.path().join("empty.jpg");
+    std::fs::write(&empty_file, b"").expect("create empty file");
+
+    let config = Config::default();
+    let processor = ImageProcessor::new(&config);
+    let result = processor.process(empty_file.as_path()).await;
+
+    assert!(result.is_err(), "empty file should fail to process");
+    // Should get a decode error (not a panic)
+    match result {
+        Err(PhotonError::Pipeline(PipelineError::Decode { .. })) => {}
+        Err(PhotonError::Pipeline(PipelineError::FileTooLarge { .. })) => {
+            // Also acceptable — 0 bytes is technically below limit but invalid
+        }
+        other => panic!("expected Decode or FileTooLarge error, got: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: 1x1 pixel image
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn process_1x1_pixel_image() {
+    // Create a minimal 1x1 PNG in a temp file
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let tiny_path = dir.path().join("tiny.png");
+    let img = image::RgbImage::new(1, 1);
+    img.save(&tiny_path).expect("save 1x1 PNG");
+
+    let config = Config::default();
+    let processor = ImageProcessor::new(&config);
+    let result = processor
+        .process(tiny_path.as_path())
+        .await
+        .expect("1x1 PNG should process successfully");
+
+    assert_eq!(result.width, 1);
+    assert_eq!(result.height, 1);
+    assert_eq!(result.format, "png");
+    assert!(!result.content_hash.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: corrupt JPEG header
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn process_corrupt_jpeg_header() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let corrupt_path = dir.path().join("corrupt.jpg");
+    // JPEG magic bytes followed by garbage
+    std::fs::write(&corrupt_path, b"\xFF\xD8\xFF\x00GARBAGE_DATA_HERE").expect("write corrupt jpg");
+
+    let config = Config::default();
+    let processor = ImageProcessor::new(&config);
+    let result = processor.process(corrupt_path.as_path()).await;
+
+    assert!(result.is_err(), "corrupt JPEG should fail");
+    match result {
+        Err(PhotonError::Pipeline(PipelineError::Decode { path, .. })) => {
+            assert_eq!(path, corrupt_path);
+        }
+        other => panic!("expected Decode error, got: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: unicode file path
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn process_unicode_file_path() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let unicode_path = dir.path().join("日本語テスト画像.png");
+
+    // Copy a real fixture to the unicode-named path
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/images/test.png");
+    std::fs::copy(&source, &unicode_path).expect("copy fixture to unicode path");
+
+    let config = Config::default();
+    let processor = ImageProcessor::new(&config);
+    let result = processor
+        .process(unicode_path.as_path())
+        .await
+        .expect("unicode path should process successfully");
+
+    assert_eq!(result.file_name, "日本語テスト画像.png");
+    assert_eq!(result.format, "png");
+    assert!(!result.content_hash.is_empty());
 }
 
 // ---------------------------------------------------------------------------

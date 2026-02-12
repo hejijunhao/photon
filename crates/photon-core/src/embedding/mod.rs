@@ -15,8 +15,8 @@
 //! // embedding is a Vec<f32> with 768 elements
 //! ```
 
-pub mod preprocess;
-pub mod siglip;
+pub(crate) mod preprocess;
+pub(crate) mod siglip;
 
 use std::path::{Path, PathBuf};
 

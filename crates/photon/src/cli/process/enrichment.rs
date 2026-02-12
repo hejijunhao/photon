@@ -1,7 +1,6 @@
 //! LLM enrichment helpers for collecting and streaming enrichment patches.
 
-use photon_core::llm::{EnrichResult, Enricher};
-use photon_core::types::{OutputRecord, ProcessedImage};
+use photon_core::{EnrichResult, Enricher, OutputRecord, ProcessedImage};
 
 /// Run LLM enrichment via a spawned task, collecting patches via channel.
 ///

@@ -118,9 +118,15 @@ impl Validator {
             return true;
         }
 
-        // TIFF: II or MM (little/big endian)
-        if (header[0] == b'I' && header[1] == b'I') || (header[0] == b'M' && header[1] == b'M') {
-            return true;
+        // TIFF: II (little-endian) or MM (big-endian) followed by version 42
+        if bytes_read >= 4 {
+            let is_tiff_le =
+                header[0] == b'I' && header[1] == b'I' && header[2] == 0x2A && header[3] == 0x00;
+            let is_tiff_be =
+                header[0] == b'M' && header[1] == b'M' && header[2] == 0x00 && header[3] == 0x2A;
+            if is_tiff_le || is_tiff_be {
+                return true;
+            }
         }
 
         // HEIC/HEIF/AVIF: ftyp box at offset 4
@@ -162,6 +168,34 @@ mod tests {
     #[test]
     fn test_magic_bytes_invalid() {
         let header = [0x00, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(!Validator::is_valid_image_header(&header, 12));
+    }
+
+    #[test]
+    fn test_magic_bytes_tiff_le() {
+        // Little-endian TIFF: II + version 42
+        let header = [b'I', b'I', 0x2A, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(Validator::is_valid_image_header(&header, 12));
+    }
+
+    #[test]
+    fn test_magic_bytes_tiff_be() {
+        // Big-endian TIFF: MM + version 42
+        let header = [b'M', b'M', 0x00, 0x2A, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(Validator::is_valid_image_header(&header, 12));
+    }
+
+    #[test]
+    fn test_magic_bytes_bare_ii_rejected() {
+        // Bare "II" without TIFF version bytes should not match
+        let header = [b'I', b'I', 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(!Validator::is_valid_image_header(&header, 12));
+    }
+
+    #[test]
+    fn test_magic_bytes_bare_mm_rejected() {
+        // Bare "MM" without TIFF version bytes should not match
+        let header = [b'M', b'M', 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
         assert!(!Validator::is_valid_image_header(&header, 12));
     }
 }

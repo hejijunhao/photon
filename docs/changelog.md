@@ -6,6 +6,8 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.5.5](#055---2026-02-13)** — Structural cleanup: module visibility tightening, `processor.rs` split, dead code removal, +10 tests (enricher, integration edge cases)
+- **[0.5.4](#054---2026-02-13)** — MEDIUM-severity correctness fixes: 10 bugs across config, tagging, pipeline, and CLI — `--skip-existing` JSON support, Warm→Cold demotion, content-based format detection
 - **[0.5.3](#053---2026-02-12)** — HIGH-severity bug fixes: progressive encoder race condition, invalid JSON output for LLM dual-stream, file size validation off-by-one
 - **[0.5.2](#052---2026-02-12)** — Code assessment fixes: progressive encoding cache bug, text encoder unwrap, `cli/process.rs` → 5-file module, `config.rs` → 3-file module (8/10 → 9/10)
 - **[0.5.1](#051---2026-02-12)** — Interactive CLI hardening: 28 unit tests, `unsafe set_var` elimination, `toml_edit` comment-preserving config, output path validation, recursive async → loop
@@ -34,6 +36,60 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.5.5] - 2026-02-13
+
+### Summary
+
+Structural cleanup and test hardening. Tightened module visibility across `photon-core` (5 modules changed from `pub mod` to `pub(crate) mod`), split `processor.rs` into 3 focused files (559 → 282 lines), removed dead code and unused re-exports, and added 10 new tests covering the LLM enricher and pipeline edge cases. 195 tests, zero clippy warnings.
+
+### Changed
+
+- **Module visibility tightened** (`lib.rs`) — `embedding`, `llm`, `math`, `output`, `pipeline`, `tagging` changed from `pub mod` to `pub(crate) mod`. All consumer-facing types re-exported from `lib.rs`. All CLI imports updated to use re-export paths.
+- **Submodule visibility tightened** — all submodules within `embedding/`, `llm/`, `pipeline/`, `tagging/` changed from `pub mod` to `pub(crate) mod`.
+- **`processor.rs` split** (559 → 282 lines) — extracted `tagging_loader.rs` (242 lines, tagging initialization methods) and `scoring.rs` (74 lines, pool-aware scoring logic). Zero logic changes.
+- **Unused re-exports removed** from `llm/mod.rs` (`ImageInput`, `LlmProvider`, `LlmRequest`, `LlmResponse`), `pipeline/mod.rs` (`DecodedImage`, `ImageDecoder`, `MetadataExtractor`, `ThumbnailGenerator`, `Validator`), `tagging/mod.rs` (`Pool`, `RelevanceConfig`, `RelevanceTracker`).
+
+### Removed
+
+- **Dead code**: `SIGLIP_IMAGE_SIZE` constant, `to_json()`/`to_jsonl()` functions in `output.rs`, `encode()` method in `text_encoder.rs`
+- **Test-only items gated** with `#[cfg(test)]`: `ThumbnailGenerator::generate_bytes()`, `LabelBank::from_raw()`, `NeighborExpander::find_siblings()`
+
+### Added
+
+- **6 enricher unit tests** (`llm/enricher.rs`) — `MockProvider` implementing `LlmProvider` with configurable responses, call counting, and artificial delay. Covers: basic success, retry on 429, no retry on 401, timeout, partial batch failure, missing file.
+- **4 integration edge case tests** (`tests/integration.rs`) — zero-length file → error (not panic), 1x1 pixel image processes correctly, corrupt JPEG header → `PipelineError::Decode`, unicode (CJK) file path preserved in output.
+
+### Tests
+
+195 tests passing (37 CLI + 144 core + 14 integration), zero clippy warnings, zero formatting violations.
+
+---
+
+## [0.5.4] - 2026-02-13
+
+### Summary
+
+Fixed 10 MEDIUM-severity issues identified in the code assessment. Covers `--skip-existing` broken with JSON format, dead Warm→Cold demotion code, `LabelBank::append()` panics, content-based format detection, incomplete EXIF presence checks, config auto-correction, TIFF false positives, dead `enabled` field, and misleading download menu. 185 tests (+21), zero clippy warnings.
+
+### Fixed
+
+- **`--skip-existing` fails on JSON array files** (M2, `cli/process/batch.rs`) — `load_existing_hashes()` parsed line-by-line, which silently failed on JSON arrays. Added two-pass approach: try array parsing first, fall back to line-by-line JSONL.
+- **JSON append produces invalid `[...][...]`** (M3, `cli/process/batch.rs`) — appending a second JSON array to an existing file. Now reads existing records, merges, and overwrites. JSONL streaming paths unchanged.
+- **`image_size` not auto-derived from model name** (M5, `config/validate.rs`) — setting `model = "siglip-base-patch16-384"` without updating `image_size` silently produced wrong embeddings. `validate()` now auto-corrects with a tracing warning. Signature changed from `&self` to `&mut self`.
+- **Warm→Cold demotion never executed** (M1, `tagging/relevance.rs`) — `warm_demotion_checks` config was dead code; terms entering Warm pool stayed forever. Added `warm_checks_without_hit` counter to `TermStats`; `sweep()` now demotes Warm→Cold when threshold exceeded.
+- **`LabelBank::append()` panics on dimension mismatch** (M6, `tagging/label_bank.rs`) — `assert_eq!` replaced with `Result<(), PipelineError>`. Caller in `progressive.rs` handles error gracefully.
+- **Content-based image format detection** (M9, `pipeline/decode.rs`) — `ImageFormat::from_path()` used extension only. A misnamed file (e.g., JPEG saved as `.png`) was mislabeled. Now uses `ImageReader::with_guessed_format()` with extension fallback.
+- **EXIF field presence check incomplete** (M10, `pipeline/metadata.rs`) — only 4 of 10 fields checked. Images with only `iso`, `aperture`, `shutter_speed`, `focal_length`, `gps_longitude`, or `orientation` had EXIF silently dropped. All 10 fields now checked.
+- **TIFF magic bytes false positives** (M11, `pipeline/validate.rs`) — only checked `II`/`MM` at bytes 0-1. Now requires full 4-byte TIFF signature including version 42.
+- **Dead `enabled` field on LLM configs** (M12, `config/types.rs`) — removed `pub enabled: bool` from all 4 provider configs. Provider selection is purely via `--llm` flag. Interactive module updated to presence-based semantics (`is_some()`).
+- **Download command misleading menu** (M8, `cli/models.rs`) — printed a 3-option menu then immediately downloaded option 1. Removed misleading menu; non-interactive path now just logs the download action.
+
+### Tests
+
+185 tests passing (37 CLI + 138 core + 10 integration), zero clippy warnings, zero formatting violations.
 
 ---
 

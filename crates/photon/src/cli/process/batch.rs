@@ -5,9 +5,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
 
-use photon_core::pipeline::DiscoveredFile;
-use photon_core::types::{OutputRecord, ProcessedImage};
-use photon_core::OutputWriter;
+use photon_core::{DiscoveredFile, OutputRecord, OutputWriter, ProcessedImage};
 
 use super::enrichment::{run_enrichment_collect, run_enrichment_stdout};
 use super::types::OutputFormat;
@@ -64,7 +62,7 @@ pub async fn process_batch(
     for file in &files {
         // Skip already-processed files
         if !existing_hashes.is_empty() {
-            if let Ok(hash) = photon_core::pipeline::Hasher::content_hash(&file.path) {
+            if let Ok(hash) = photon_core::Hasher::content_hash(&file.path) {
                 if existing_hashes.contains(&hash) {
                     skipped += 1;
                     progress.inc(1);
@@ -149,25 +147,39 @@ pub async fn process_batch(
 
         // Write batch results to file (JSON format — must collect for array wrapper)
         if let Some(output_path) = args.output.as_ref().filter(|_| !results.is_empty()) {
-            let file = if args.skip_existing && output_path.exists() {
-                std::fs::OpenOptions::new().append(true).open(output_path)?
-            } else {
-                File::create(output_path)?
-            };
+            // For JSON format with skip-existing, merge existing records — appending arrays is invalid JSON.
+            let mut existing_records: Vec<OutputRecord> = Vec::new();
+            if args.skip_existing && output_path.exists() {
+                let content = std::fs::read_to_string(output_path)?;
+                if let Ok(records) = serde_json::from_str::<Vec<OutputRecord>>(&content) {
+                    existing_records = records;
+                }
+            }
+            let file = File::create(output_path)?;
             let mut writer = OutputWriter::new(BufWriter::new(file), ctx.output_format, false);
 
             if ctx.llm_enabled {
                 // ── Phase 2: LLM enrichment to file (only if --llm) ──
-                let mut all_records: Vec<OutputRecord> = results
-                    .iter()
-                    .map(|r| OutputRecord::Core(Box::new(r.clone())))
-                    .collect();
+                let mut all_records: Vec<OutputRecord> = existing_records;
+                all_records.extend(
+                    results
+                        .iter()
+                        .map(|r| OutputRecord::Core(Box::new(r.clone()))),
+                );
 
                 if let Some(enricher) = ctx.enricher.take() {
                     let patches = run_enrichment_collect(enricher, results.clone()).await?;
                     all_records.extend(patches);
                 }
 
+                writer.write_all(&all_records)?;
+            } else if !existing_records.is_empty() {
+                let mut all_records = existing_records;
+                all_records.extend(
+                    results
+                        .iter()
+                        .map(|r| OutputRecord::Core(Box::new(r.clone()))),
+                );
                 writer.write_all(&all_records)?;
             } else {
                 writer.write_all(&results)?;
@@ -240,19 +252,35 @@ fn load_existing_hashes(output_path: &Option<PathBuf>) -> anyhow::Result<HashSet
     }
 
     let content = std::fs::read_to_string(path)?;
+
+    // Try JSON array first (handles --format json output)
+    if let Ok(records) = serde_json::from_str::<Vec<OutputRecord>>(&content) {
+        for record in records {
+            if let OutputRecord::Core(img) = record {
+                hashes.insert(img.content_hash);
+            }
+        }
+        return Ok(hashes);
+    }
+    if let Ok(images) = serde_json::from_str::<Vec<ProcessedImage>>(&content) {
+        for image in images {
+            hashes.insert(image.content_hash);
+        }
+        return Ok(hashes);
+    }
+
+    // Fall back to line-by-line JSONL parsing
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        // Try parsing as OutputRecord first (dual-stream format)
         if let Ok(record) = serde_json::from_str::<OutputRecord>(line) {
             if let OutputRecord::Core(img) = record {
                 hashes.insert(img.content_hash);
             }
             continue;
         }
-        // Fall back to plain ProcessedImage
         if let Ok(image) = serde_json::from_str::<ProcessedImage>(line) {
             hashes.insert(image.content_hash);
         }
@@ -312,4 +340,114 @@ fn print_summary(
     eprintln!("    Rate:         {:>7.1} img/sec", rate);
     eprintln!("    Throughput:   {:>7.1} MB/sec", throughput);
     eprintln!("  ====================================");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use photon_core::types::{EnrichmentPatch, ProcessedImage};
+    use std::io::Write;
+
+    fn sample_image(hash: &str) -> ProcessedImage {
+        ProcessedImage {
+            file_path: std::path::PathBuf::from("/test/image.jpg"),
+            file_name: "image.jpg".to_string(),
+            content_hash: hash.to_string(),
+            width: 100,
+            height: 100,
+            format: "jpeg".to_string(),
+            file_size: 1000,
+            embedding: vec![],
+            exif: None,
+            tags: vec![],
+            description: None,
+            thumbnail: None,
+            perceptual_hash: None,
+        }
+    }
+
+    #[test]
+    fn test_load_existing_hashes_json_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.json");
+
+        let records = vec![
+            OutputRecord::Core(Box::new(sample_image("hash_a"))),
+            OutputRecord::Core(Box::new(sample_image("hash_b"))),
+        ];
+        let json = serde_json::to_string_pretty(&records).unwrap();
+        std::fs::write(&path, &json).unwrap();
+
+        let hashes = load_existing_hashes(&Some(path)).unwrap();
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains("hash_a"));
+        assert!(hashes.contains("hash_b"));
+    }
+
+    #[test]
+    fn test_load_existing_hashes_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.jsonl");
+
+        let mut f = std::fs::File::create(&path).unwrap();
+        let img_a = sample_image("hash_c");
+        let img_b = sample_image("hash_d");
+        writeln!(f, "{}", serde_json::to_string(&img_a).unwrap()).unwrap();
+        writeln!(f, "{}", serde_json::to_string(&img_b).unwrap()).unwrap();
+
+        let hashes = load_existing_hashes(&Some(path)).unwrap();
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains("hash_c"));
+        assert!(hashes.contains("hash_d"));
+    }
+
+    #[test]
+    fn test_load_existing_hashes_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.json");
+        std::fs::write(&path, "").unwrap();
+
+        let hashes = load_existing_hashes(&Some(path)).unwrap();
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_load_existing_hashes_mixed_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.json");
+
+        let records: Vec<OutputRecord> = vec![
+            OutputRecord::Core(Box::new(sample_image("hash_e"))),
+            OutputRecord::Enrichment(EnrichmentPatch {
+                content_hash: "hash_e".to_string(),
+                description: "A test image".to_string(),
+                llm_model: "test".to_string(),
+                llm_latency_ms: 100,
+                llm_tokens: None,
+            }),
+            OutputRecord::Core(Box::new(sample_image("hash_f"))),
+        ];
+        let json = serde_json::to_string(&records).unwrap();
+        std::fs::write(&path, &json).unwrap();
+
+        let hashes = load_existing_hashes(&Some(path)).unwrap();
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains("hash_e"));
+        assert!(hashes.contains("hash_f"));
+    }
+
+    #[test]
+    fn test_load_existing_hashes_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+
+        let hashes = load_existing_hashes(&Some(path)).unwrap();
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_load_existing_hashes_none_output() {
+        let hashes = load_existing_hashes(&None).unwrap();
+        assert!(hashes.is_empty());
+    }
 }

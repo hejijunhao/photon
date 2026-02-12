@@ -8,8 +8,7 @@ use crate::cli::models::check_installed;
 use crate::cli::process::{OutputFormat, ProcessArgs, Quality};
 use console::Style;
 use dialoguer::{Confirm, Input, Select};
-use photon_core::pipeline::FileDiscovery;
-use photon_core::Config;
+use photon_core::{Config, FileDiscovery};
 use std::path::PathBuf;
 
 use super::theme::photon_theme;

@@ -117,25 +117,6 @@ impl<W: Write> OutputWriter<W> {
     }
 }
 
-/// Convenience function to serialize an item to a JSON string.
-pub fn to_json<T: Serialize>(item: &T, pretty: bool) -> Result<String, serde_json::Error> {
-    if pretty {
-        serde_json::to_string_pretty(item)
-    } else {
-        serde_json::to_string(item)
-    }
-}
-
-/// Convenience function to serialize items to JSONL format.
-pub fn to_jsonl<T: Serialize>(items: &[T]) -> Result<String, serde_json::Error> {
-    let mut output = String::new();
-    for item in items {
-        output.push_str(&serde_json::to_string(item)?);
-        output.push('\n');
-    }
-    Ok(output)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

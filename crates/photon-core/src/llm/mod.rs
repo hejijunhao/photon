@@ -4,13 +4,13 @@
 //! OpenAI, Hyperbolic) and a concurrent enrichment engine that generates descriptions
 //! for batches of already-processed images.
 
-pub mod anthropic;
-pub mod enricher;
-pub mod hyperbolic;
-pub mod ollama;
-pub mod openai;
-pub mod provider;
-pub mod retry;
+pub(crate) mod anthropic;
+pub(crate) mod enricher;
+pub(crate) mod hyperbolic;
+pub(crate) mod ollama;
+pub(crate) mod openai;
+pub(crate) mod provider;
+pub(crate) mod retry;
 
 pub use enricher::{EnrichOptions, EnrichResult, Enricher};
-pub use provider::{ImageInput, LlmProvider, LlmProviderFactory, LlmRequest, LlmResponse};
+pub use provider::LlmProviderFactory;

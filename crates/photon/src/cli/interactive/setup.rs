@@ -278,11 +278,6 @@ fn save_key_to_config(provider: &LlmProvider, key: &str) -> anyhow::Result<()> {
 
     doc["llm"][section_name]["api_key"] = toml_edit::value(key);
 
-    // Only set enabled if not already present
-    if doc["llm"][section_name].get("enabled").is_none() {
-        doc["llm"][section_name]["enabled"] = toml_edit::value(true);
-    }
-
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -308,7 +303,6 @@ mod tests {
     fn config_has_key_anthropic_with_real_key() {
         let mut config = Config::default();
         config.llm.anthropic = Some(AnthropicConfig {
-            enabled: true,
             api_key: "sk-ant-real-key-123".to_string(),
             model: "claude-sonnet-4-20250514".to_string(),
         });
@@ -319,7 +313,6 @@ mod tests {
     fn config_has_key_anthropic_empty_key() {
         let mut config = Config::default();
         config.llm.anthropic = Some(AnthropicConfig {
-            enabled: true,
             api_key: String::new(),
             model: "claude-sonnet-4-20250514".to_string(),
         });
@@ -330,7 +323,6 @@ mod tests {
     fn config_has_key_anthropic_template_key() {
         let mut config = Config::default();
         config.llm.anthropic = Some(AnthropicConfig {
-            enabled: true,
             api_key: "${ANTHROPIC_API_KEY}".to_string(),
             model: "claude-sonnet-4-20250514".to_string(),
         });

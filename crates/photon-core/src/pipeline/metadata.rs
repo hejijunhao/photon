@@ -38,6 +38,12 @@ impl MetadataExtractor {
             || data.camera_make.is_some()
             || data.camera_model.is_some()
             || data.gps_latitude.is_some()
+            || data.gps_longitude.is_some()
+            || data.iso.is_some()
+            || data.aperture.is_some()
+            || data.shutter_speed.is_some()
+            || data.focal_length.is_some()
+            || data.orientation.is_some()
         {
             Some(data)
         } else {

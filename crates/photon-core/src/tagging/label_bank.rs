@@ -31,7 +31,8 @@ impl LabelBank {
         }
     }
 
-    /// Create a label bank from a pre-computed matrix (for testing/external use).
+    /// Create a label bank from a pre-computed matrix (for testing).
+    #[cfg(test)]
     pub fn from_raw(matrix: Vec<f32>, embedding_dim: usize, term_count: usize) -> Self {
         assert_eq!(
             matrix.len(),
@@ -52,13 +53,18 @@ impl LabelBank {
     ///
     /// The caller must ensure vocabulary ordering matches (i.e., the appended
     /// bank's terms come after this bank's terms in the combined vocabulary).
-    pub fn append(&mut self, other: &LabelBank) {
-        assert_eq!(
-            self.embedding_dim, other.embedding_dim,
-            "Cannot append label banks with different embedding dimensions"
-        );
+    pub fn append(&mut self, other: &LabelBank) -> Result<(), PipelineError> {
+        if self.embedding_dim != other.embedding_dim {
+            return Err(PipelineError::Model {
+                message: format!(
+                    "Cannot append label banks: dimension mismatch ({} vs {})",
+                    self.embedding_dim, other.embedding_dim
+                ),
+            });
+        }
         self.matrix.extend_from_slice(&other.matrix);
         self.term_count += other.term_count;
+        Ok(())
     }
 
     /// Encode all vocabulary terms and build the label bank.
@@ -244,7 +250,7 @@ mod tests {
             term_count: 5,
         };
 
-        bank_a.append(&bank_b);
+        bank_a.append(&bank_b).unwrap();
         assert_eq!(bank_a.term_count(), 8);
         assert_eq!(bank_a.matrix().len(), 8 * dim);
     }
@@ -264,7 +270,7 @@ mod tests {
             term_count: 2,
         };
 
-        bank_a.append(&bank_b);
+        bank_a.append(&bank_b).unwrap();
 
         // First 3*dim values should be unchanged
         assert_eq!(&bank_a.matrix()[..3 * dim], &original_data[..]);
@@ -277,7 +283,7 @@ mod tests {
         let mut bank_a = LabelBank::empty();
         let bank_b = LabelBank::empty();
 
-        bank_a.append(&bank_b);
+        bank_a.append(&bank_b).unwrap();
         assert_eq!(bank_a.term_count(), 0);
         assert!(bank_a.matrix().is_empty());
     }
@@ -292,14 +298,13 @@ mod tests {
             term_count: 3,
         };
 
-        bank_a.append(&bank_b);
+        bank_a.append(&bank_b).unwrap();
         assert_eq!(bank_a.term_count(), 3);
         assert_eq!(bank_a.matrix().len(), 3 * dim);
     }
 
     #[test]
-    #[should_panic(expected = "different embedding dimensions")]
-    fn test_append_dimension_mismatch() {
+    fn test_append_dimension_mismatch_returns_error() {
         let mut bank_a = LabelBank {
             matrix: vec![1.0; 768],
             embedding_dim: 768,
@@ -311,6 +316,11 @@ mod tests {
             term_count: 1,
         };
 
-        bank_a.append(&bank_b); // should panic
+        let result = bank_a.append(&bank_b);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("dimension mismatch"));
     }
 }

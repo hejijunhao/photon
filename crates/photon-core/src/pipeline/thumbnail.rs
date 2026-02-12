@@ -39,6 +39,7 @@ impl ThumbnailGenerator {
     /// Generate a thumbnail and return the raw bytes.
     ///
     /// Useful for writing directly to disk.
+    #[cfg(test)]
     pub fn generate_bytes(&self, image: &DynamicImage) -> Option<Vec<u8>> {
         if !self.config.enabled {
             return None;

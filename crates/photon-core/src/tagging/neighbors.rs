@@ -15,6 +15,7 @@ impl NeighborExpander {
     ///
     /// Returns indices of sibling terms in the vocabulary, excluding the input term.
     /// Supplemental terms (no hypernyms) return an empty vec.
+    #[cfg(test)]
     pub fn find_siblings(vocabulary: &Vocabulary, term_index: usize) -> Vec<usize> {
         let parent_index = vocabulary.build_parent_index();
         Self::find_siblings_indexed(vocabulary, term_index, &parent_index)

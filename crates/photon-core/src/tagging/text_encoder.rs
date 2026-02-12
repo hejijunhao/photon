@@ -150,17 +150,6 @@ impl SigLipTextEncoder {
         Ok(embeddings)
     }
 
-    /// Encode a single text string to a normalized embedding.
-    pub fn encode(&self, text: &str) -> Result<Vec<f32>, PipelineError> {
-        let batch = self.encode_batch(&[text.to_string()])?;
-        batch
-            .into_iter()
-            .next()
-            .ok_or_else(|| PipelineError::Model {
-                message: "Text encoder returned empty result for single input".to_string(),
-            })
-    }
-
     /// Check whether the text encoder model files exist.
     pub fn model_exists(model_dir: &Path) -> bool {
         model_dir.join("text_model.onnx").exists() && model_dir.join("tokenizer.json").exists()

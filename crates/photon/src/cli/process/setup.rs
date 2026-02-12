@@ -1,8 +1,8 @@
 //! Processor setup: config overrides, model loading, enricher creation.
 
-use photon_core::embedding::EmbeddingEngine;
-use photon_core::output::OutputFormat as CoreOutputFormat;
-use photon_core::{Config, ImageProcessor, ProcessOptions};
+use photon_core::{
+    Config, EmbeddingEngine, ImageProcessor, OutputFormat as CoreOutputFormat, ProcessOptions,
+};
 
 use super::types::{LlmProvider, OutputFormat, Quality};
 use super::{ProcessArgs, ProcessContext};
@@ -124,8 +124,8 @@ pub fn setup_processor(args: &ProcessArgs) -> anyhow::Result<ProcessContext> {
 fn create_enricher(
     args: &ProcessArgs,
     config: &Config,
-) -> anyhow::Result<Option<photon_core::llm::Enricher>> {
-    use photon_core::llm::{EnrichOptions, LlmProviderFactory};
+) -> anyhow::Result<Option<photon_core::Enricher>> {
+    use photon_core::{EnrichOptions, LlmProviderFactory};
 
     let provider_name = match &args.llm {
         Some(p) => p.to_string(),
@@ -149,7 +149,7 @@ fn create_enricher(
         retry_delay_ms: config.pipeline.retry_delay_ms,
     };
 
-    Ok(Some(photon_core::llm::Enricher::new(provider, options)))
+    Ok(Some(photon_core::Enricher::new(provider, options)))
 }
 
 /// Inject a session API key into the LLM config for the specified provider.

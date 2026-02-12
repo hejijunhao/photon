@@ -87,14 +87,21 @@ impl ImageDecoder {
 
     /// Synchronous decode implementation (runs in spawn_blocking).
     fn decode_sync(path: &Path) -> Result<DecodedImage, PipelineError> {
-        // Detect format from path extension and file contents
-        let format = ImageFormat::from_path(path).map_err(|e| PipelineError::Decode {
+        // Detect format from file content (magic bytes), falling back to extension
+        let reader = image::ImageReader::open(path).map_err(|e| PipelineError::Decode {
             path: path.to_path_buf(),
-            message: format!("Unknown format: {}", e),
+            message: e.to_string(),
         })?;
-
-        // Open and decode the image
-        let image = image::open(path).map_err(|e| PipelineError::Decode {
+        let reader = reader
+            .with_guessed_format()
+            .map_err(|e| PipelineError::Decode {
+                path: path.to_path_buf(),
+                message: format!("Cannot detect image format: {}", e),
+            })?;
+        let format = reader
+            .format()
+            .unwrap_or_else(|| ImageFormat::from_path(path).unwrap_or(ImageFormat::Jpeg));
+        let image = reader.decode().map_err(|e| PipelineError::Decode {
             path: path.to_path_buf(),
             message: e.to_string(),
         })?;
@@ -137,5 +144,18 @@ mod tests {
         assert_eq!(format_to_string(ImageFormat::Jpeg), "jpeg");
         assert_eq!(format_to_string(ImageFormat::Png), "png");
         assert_eq!(format_to_string(ImageFormat::WebP), "webp");
+    }
+
+    #[test]
+    fn test_format_detected_by_content() {
+        // Copy a PNG file to a .jpg extension — format should be detected as PNG
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/images/test.png");
+        let dir = tempfile::tempdir().unwrap();
+        let misnamed = dir.path().join("test_misnamed.jpg");
+        std::fs::copy(&fixture, &misnamed).unwrap();
+
+        let result = ImageDecoder::decode_sync(&misnamed).unwrap();
+        assert_eq!(result.format, ImageFormat::Png);
     }
 }

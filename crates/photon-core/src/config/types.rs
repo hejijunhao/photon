@@ -324,9 +324,6 @@ pub struct LlmConfig {
 /// Ollama configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaConfig {
-    /// Whether this provider is enabled
-    pub enabled: bool,
-
     /// Ollama API endpoint
     pub endpoint: String,
 
@@ -337,7 +334,6 @@ pub struct OllamaConfig {
 impl Default for OllamaConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             endpoint: "http://localhost:11434".to_string(),
             model: "llama3.2-vision".to_string(),
         }
@@ -347,9 +343,6 @@ impl Default for OllamaConfig {
 /// Hyperbolic configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HyperbolicConfig {
-    /// Whether this provider is enabled
-    pub enabled: bool,
-
     /// API endpoint
     pub endpoint: String,
 
@@ -363,7 +356,6 @@ pub struct HyperbolicConfig {
 impl Default for HyperbolicConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             endpoint: "https://api.hyperbolic.xyz/v1".to_string(),
             api_key: "${HYPERBOLIC_API_KEY}".to_string(),
             model: "meta-llama/Llama-3.2-11B-Vision-Instruct".to_string(),
@@ -374,9 +366,6 @@ impl Default for HyperbolicConfig {
 /// Anthropic configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicConfig {
-    /// Whether this provider is enabled
-    pub enabled: bool,
-
     /// API key (supports ${ENV_VAR} syntax)
     pub api_key: String,
 
@@ -387,7 +376,6 @@ pub struct AnthropicConfig {
 impl Default for AnthropicConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             api_key: "${ANTHROPIC_API_KEY}".to_string(),
             model: "claude-sonnet-4-20250514".to_string(),
         }
@@ -397,9 +385,6 @@ impl Default for AnthropicConfig {
 /// OpenAI configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAiConfig {
-    /// Whether this provider is enabled
-    pub enabled: bool,
-
     /// API key (supports ${ENV_VAR} syntax)
     pub api_key: String,
 
@@ -410,7 +395,6 @@ pub struct OpenAiConfig {
 impl Default for OpenAiConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             api_key: "${OPENAI_API_KEY}".to_string(),
             model: "gpt-4o-mini".to_string(),
         }

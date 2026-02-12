@@ -1,8 +1,7 @@
 //! The `photon models` command for managing AI models.
 
 use clap::{Args, Subcommand};
-use photon_core::pipeline::Hasher;
-use photon_core::Config;
+use photon_core::{Config, Hasher};
 use std::path::Path;
 
 /// Arguments for the `models` command.
@@ -202,15 +201,7 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
 
     match args.command {
         ModelsCommand::Download => {
-            // Show available variants
-            println!("Select SigLIP vision model(s) to download:\n");
-            println!("  1) Base (224)    ~350MB  — fast, good for most use cases");
-            println!("  2) Base (384)    ~350MB  — higher detail, 3-4x slower");
-            println!("  3) Both          ~700MB  — switch per-run with --quality");
-            println!("\n  Text encoder + tokenizer (~443MB, fp32) will also be downloaded.\n");
-
-            // Default to option 1 (non-interactive for CI/automation)
-            tracing::info!("Downloading Base (224) variant (default)...");
+            tracing::info!("Downloading Base (224) vision encoder...");
 
             let client = reqwest::Client::new();
 

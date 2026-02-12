@@ -445,7 +445,9 @@ impl ImageProcessor {
                         tracker.record_hits(&raw_hits);
 
                         // Periodic sweep + neighbor expansion
-                        if tracker.images_processed() % self.sweep_interval == 0
+                        if tracker
+                            .images_processed()
+                            .is_multiple_of(self.sweep_interval)
                             && tracker.images_processed() > 0
                         {
                             let promoted = tracker.sweep();

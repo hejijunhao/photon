@@ -38,6 +38,9 @@ pub struct TermStats {
     pub last_hit_ts: u64,
     /// Current pool assignment.
     pub pool: Pool,
+    /// Consecutive warm sweep checks with no hits (for Warm→Cold demotion).
+    #[serde(default)]
+    pub warm_checks_without_hit: u32,
 }
 
 impl TermStats {
@@ -120,6 +123,7 @@ impl RelevanceTracker {
                 } else {
                     Pool::Cold
                 },
+                warm_checks_without_hit: 0,
             })
             .collect();
         Self {
@@ -144,6 +148,7 @@ impl RelevanceTracker {
             stat.hit_count += 1;
             stat.score_sum += confidence;
             stat.last_hit_ts = now;
+            stat.warm_checks_without_hit = 0;
         }
         self.images_processed += 1;
     }
@@ -186,7 +191,14 @@ impl RelevanceTracker {
                         && stat.avg_confidence() >= self.config.promotion_threshold
                     {
                         stat.pool = Pool::Active;
+                        stat.warm_checks_without_hit = 0;
                         newly_promoted.push(i);
+                    } else {
+                        stat.warm_checks_without_hit += 1;
+                        if stat.warm_checks_without_hit >= self.config.warm_demotion_checks {
+                            stat.pool = Pool::Cold;
+                            stat.warm_checks_without_hit = 0;
+                        }
                     }
                 }
                 Pool::Cold => {
@@ -290,6 +302,7 @@ impl RelevanceTracker {
                     score_sum: 0.0,
                     last_hit_ts: 0,
                     pool: Pool::Cold,
+                    warm_checks_without_hit: 0,
                 })
             })
             .collect();
@@ -319,6 +332,7 @@ mod tests {
             score_sum: 0.0,
             last_hit_ts: 0,
             pool: Pool::Active,
+            warm_checks_without_hit: 0,
         };
         assert_eq!(stat.avg_confidence(), 0.0);
     }
@@ -330,6 +344,7 @@ mod tests {
             score_sum: 0.8 + 0.6 + 0.7,
             last_hit_ts: 1000,
             pool: Pool::Active,
+            warm_checks_without_hit: 0,
         };
         let avg = stat.avg_confidence();
         assert!((avg - 0.7).abs() < 0.001);
@@ -666,5 +681,74 @@ mod tests {
         assert_eq!(config.active_demotion_days, 90);
         assert_eq!(config.warm_demotion_checks, 50);
         assert!(config.neighbor_expansion);
+    }
+
+    // ── Warm→Cold demotion tests ──
+
+    #[test]
+    fn test_warm_to_cold_demotion() {
+        let mask = vec![false];
+        let config = RelevanceConfig {
+            warm_demotion_checks: 3, // Demote after 3 sweeps with no hits
+            ..default_config()
+        };
+        let mut tracker = RelevanceTracker::new(1, &mask, config);
+        tracker.stats[0].pool = Pool::Warm;
+
+        // Sweep 1, 2: still Warm
+        tracker.sweep();
+        assert_eq!(tracker.pool(0), Pool::Warm);
+        tracker.sweep();
+        assert_eq!(tracker.pool(0), Pool::Warm);
+
+        // Sweep 3: demoted to Cold
+        tracker.sweep();
+        assert_eq!(tracker.pool(0), Pool::Cold);
+    }
+
+    #[test]
+    fn test_warm_hit_resets_demotion_counter() {
+        let mask = vec![false];
+        let config = RelevanceConfig {
+            warm_demotion_checks: 3,
+            promotion_threshold: 0.9, // High threshold so hit doesn't promote
+            ..default_config()
+        };
+        let mut tracker = RelevanceTracker::new(1, &mask, config);
+        tracker.stats[0].pool = Pool::Warm;
+
+        // Two sweeps with no hits
+        tracker.sweep();
+        tracker.sweep();
+        assert_eq!(tracker.stats[0].warm_checks_without_hit, 2);
+
+        // Record a hit — resets counter
+        tracker.record_hits(&[(0, 0.1)]);
+        assert_eq!(tracker.stats[0].warm_checks_without_hit, 0);
+
+        // Two more sweeps — still Warm (counter was reset)
+        tracker.sweep();
+        tracker.sweep();
+        assert_eq!(tracker.pool(0), Pool::Warm);
+    }
+
+    #[test]
+    fn test_warm_promotion_resets_counter() {
+        let mask = vec![false];
+        let config = RelevanceConfig {
+            warm_demotion_checks: 50,
+            promotion_threshold: 0.2,
+            ..default_config()
+        };
+        let mut tracker = RelevanceTracker::new(1, &mask, config);
+        tracker.stats[0].pool = Pool::Warm;
+        tracker.stats[0].warm_checks_without_hit = 10; // Some accumulated checks
+        tracker.stats[0].hit_count = 5;
+        tracker.stats[0].score_sum = 2.0; // avg = 0.4 > threshold 0.2
+
+        let promoted = tracker.sweep();
+        assert_eq!(tracker.pool(0), Pool::Active);
+        assert_eq!(promoted, vec![0]);
+        assert_eq!(tracker.stats[0].warm_checks_without_hit, 0);
     }
 }

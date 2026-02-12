@@ -9,19 +9,15 @@
 //! - **validate**: Pre-processing validation
 //! - **processor**: Orchestrates the full pipeline
 
-pub mod decode;
-pub mod discovery;
-pub mod hash;
-pub mod metadata;
-pub mod processor;
-pub mod thumbnail;
-pub mod validate;
+pub(crate) mod decode;
+pub(crate) mod discovery;
+pub(crate) mod hash;
+pub(crate) mod metadata;
+pub(crate) mod processor;
+pub(crate) mod thumbnail;
+pub(crate) mod validate;
 
 // Re-exports for convenient access
-pub use decode::{DecodedImage, ImageDecoder};
 pub use discovery::{DiscoveredFile, FileDiscovery};
 pub use hash::Hasher;
-pub use metadata::MetadataExtractor;
 pub use processor::{ImageProcessor, ProcessOptions};
-pub use thumbnail::ThumbnailGenerator;
-pub use validate::Validator;

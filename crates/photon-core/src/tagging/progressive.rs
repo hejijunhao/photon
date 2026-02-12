@@ -117,7 +117,10 @@ impl ProgressiveEncoder {
         // this keeps total encoding work at O(N) not O(N * num_swaps).
         let mut encoded_indices = ctx.seed_indices;
         let mut running_bank = {
-            let scorer = ctx.scorer_slot.read().unwrap();
+            let scorer = ctx
+                .scorer_slot
+                .read()
+                .expect("TagScorer lock poisoned during background encoding read");
             scorer.label_bank().clone()
         };
 
@@ -149,7 +152,11 @@ impl ProgressiveEncoder {
             };
 
             // Append the new chunk's embeddings to the running bank
-            running_bank.append(&chunk_bank);
+            if let Err(e) = running_bank.append(&chunk_bank) {
+                tracing::error!("Failed to append chunk to label bank: {e}");
+                all_chunks_succeeded = false;
+                continue;
+            }
             encoded_indices.extend_from_slice(&chunk_indices);
 
             // Build a new scorer from the accumulated data.
@@ -161,7 +168,10 @@ impl ProgressiveEncoder {
 
             // Atomic swap — write lock held only for the duration of a field swap
             {
-                let mut lock = ctx.scorer_slot.write().unwrap();
+                let mut lock = ctx
+                    .scorer_slot
+                    .write()
+                    .expect("TagScorer lock poisoned during background encoding swap");
                 *lock = new_scorer;
             }
 
