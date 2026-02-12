@@ -20,6 +20,8 @@
 //! photon models download
 //! ```
 
+use std::io::IsTerminal;
+
 use clap::{Parser, Subcommand};
 
 mod cli;
@@ -40,7 +42,7 @@ struct Cli {
     json_logs: bool,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 /// Available commands.
@@ -78,8 +80,17 @@ async fn main() -> anyhow::Result<()> {
 
     // Dispatch to the appropriate command handler
     match cli.command {
-        Commands::Process(args) => cli::process::execute(args).await,
-        Commands::Models(args) => cli::models::execute(args).await,
-        Commands::Config(args) => cli::config::execute(args).await,
+        Some(Commands::Process(args)) => cli::process::execute(args).await,
+        Some(Commands::Models(args)) => cli::models::execute(args).await,
+        Some(Commands::Config(args)) => cli::config::execute(args).await,
+        None => {
+            if std::io::stdin().is_terminal() {
+                cli::interactive::run(&config).await
+            } else {
+                // Non-TTY (piped input) — show help and exit
+                Cli::parse_from(["photon", "--help"]);
+                Ok(())
+            }
+        }
     }
 }

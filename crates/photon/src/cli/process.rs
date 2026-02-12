@@ -127,6 +127,32 @@ impl std::fmt::Display for LlmProvider {
     }
 }
 
+/// Manual Default impl for constructing ProcessArgs outside of clap.
+///
+/// Values match the clap `#[arg(default_value = ...)]` annotations above.
+/// Used by the interactive module to build ProcessArgs field-by-field.
+impl Default for ProcessArgs {
+    fn default() -> Self {
+        Self {
+            input: PathBuf::new(),
+            output: None,
+            format: OutputFormat::Json,
+            parallel: 4,
+            skip_existing: false,
+            no_thumbnail: false,
+            no_embedding: false,
+            no_tagging: false,
+            no_description: false,
+            quality: Quality::Fast,
+            thumbnail_size: 256,
+            llm: None,
+            llm_model: None,
+            show_tag_paths: false,
+            no_dedup_tags: false,
+        }
+    }
+}
+
 /// Processing context assembled by setup_processor().
 struct ProcessContext {
     processor: ImageProcessor,

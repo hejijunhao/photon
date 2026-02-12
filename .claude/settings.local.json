@@ -36,7 +36,9 @@
       "Bash(cargo outdated:*)",
       "Bash(cargo bench:*)",
       "Bash(b3sum:*)",
-      "Bash(cargo install:*)"
+      "Bash(cargo install:*)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

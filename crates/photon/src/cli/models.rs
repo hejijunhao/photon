@@ -66,14 +66,142 @@ const VISUAL_MODEL_LOCAL_NAME: &str = "visual.onnx";
 const TEXT_MODEL_LOCAL_NAME: &str = "text_model.onnx";
 const TOKENIZER_LOCAL_NAME: &str = "tokenizer.json";
 
+// ── Reusable public API (used by both flag-based CLI and interactive module) ──
+
+/// Status of each model file on disk.
+pub struct InstalledModels {
+    pub vision_224: bool,
+    pub vision_384: bool,
+    pub text_encoder: bool,
+    pub tokenizer: bool,
+    pub vocabulary: bool,
+}
+
+impl InstalledModels {
+    /// Returns true if the minimum required models are present for processing.
+    pub fn can_process(&self) -> bool {
+        (self.vision_224 || self.vision_384) && self.text_encoder && self.tokenizer
+    }
+}
+
+/// Check which models are currently installed.
+pub fn check_installed(config: &Config) -> InstalledModels {
+    let model_dir = config.model_dir();
+    let vocab_dir = config.vocabulary_dir();
+
+    InstalledModels {
+        vision_224: model_dir
+            .join(VISION_VARIANTS[0].name)
+            .join(VISUAL_MODEL_LOCAL_NAME)
+            .exists(),
+        vision_384: model_dir
+            .join(VISION_VARIANTS[1].name)
+            .join(VISUAL_MODEL_LOCAL_NAME)
+            .exists(),
+        text_encoder: model_dir.join(TEXT_MODEL_LOCAL_NAME).exists(),
+        tokenizer: model_dir.join(TOKENIZER_LOCAL_NAME).exists(),
+        vocabulary: vocab_dir.join("wordnet_nouns.txt").exists()
+            && vocab_dir.join("supplemental.txt").exists(),
+    }
+}
+
+/// Download vision model variant(s) by index (0 = Base 224, 1 = Base 384).
+///
+/// Skips already-downloaded files.
+pub async fn download_vision(
+    variant_indices: &[usize],
+    config: &Config,
+    client: &reqwest::Client,
+) -> anyhow::Result<()> {
+    let model_dir = config.model_dir();
+
+    for &idx in variant_indices {
+        let variant = &VISION_VARIANTS[idx];
+        let variant_dir = model_dir.join(variant.name);
+        let dest = variant_dir.join(VISUAL_MODEL_LOCAL_NAME);
+
+        if dest.exists() {
+            tracing::info!("{} already exists at {:?}", variant.label, dest);
+            continue;
+        }
+
+        std::fs::create_dir_all(&variant_dir)?;
+
+        let url = format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            variant.repo, variant.remote_path
+        );
+
+        tracing::info!("Downloading {} vision encoder...", variant.label);
+        tracing::info!("  Source: {}", url);
+        tracing::info!("  Destination: {:?}", dest);
+
+        download_file(client, &url, &dest, Some(variant.blake3)).await?;
+
+        let file_size = std::fs::metadata(&dest)?.len();
+        tracing::info!(
+            "  {} complete ({:.1} MB)",
+            variant.label,
+            file_size as f64 / (1024.0 * 1024.0)
+        );
+    }
+
+    Ok(())
+}
+
+/// Download shared text encoder and tokenizer. Skips if already present.
+pub async fn download_shared(config: &Config, client: &reqwest::Client) -> anyhow::Result<()> {
+    let model_dir = config.model_dir();
+
+    // Text encoder
+    let text_dest = model_dir.join(TEXT_MODEL_LOCAL_NAME);
+    if text_dest.exists() {
+        tracing::info!("Text encoder already exists at {:?}", text_dest);
+    } else {
+        std::fs::create_dir_all(&model_dir)?;
+        let url = format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            TEXT_ENCODER_REPO, TEXT_ENCODER_REMOTE
+        );
+        tracing::info!("Downloading text encoder (fp32)...");
+        tracing::info!("  Source: {}", url);
+        tracing::info!("  Destination: {:?}", text_dest);
+        download_file(client, &url, &text_dest, Some(TEXT_ENCODER_BLAKE3)).await?;
+        let file_size = std::fs::metadata(&text_dest)?.len();
+        tracing::info!(
+            "  Text encoder complete ({:.1} MB)",
+            file_size as f64 / (1024.0 * 1024.0)
+        );
+    }
+
+    // Tokenizer
+    let tok_dest = model_dir.join(TOKENIZER_LOCAL_NAME);
+    if tok_dest.exists() {
+        tracing::info!("Tokenizer already exists at {:?}", tok_dest);
+    } else {
+        let url = format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            TEXT_ENCODER_REPO, TOKENIZER_REMOTE
+        );
+        tracing::info!("Downloading tokenizer...");
+        tracing::info!("  Source: {}", url);
+        tracing::info!("  Destination: {:?}", tok_dest);
+        download_file(client, &url, &tok_dest, Some(TOKENIZER_BLAKE3)).await?;
+        tracing::info!("  Tokenizer complete");
+    }
+
+    Ok(())
+}
+
+/// Public variant labels for display in interactive mode.
+pub const VARIANT_LABELS: &[&str] = &["Base (224)", "Base (384)"];
+
 /// Execute the models command.
 pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
     let config = Config::load()?;
 
     match args.command {
         ModelsCommand::Download => {
-            let model_dir = config.model_dir();
-
             // Show available variants
             println!("Select SigLIP vision model(s) to download:\n");
             println!("  1) Base (224)    ~350MB  — fast, good for most use cases");
@@ -82,89 +210,12 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
             println!("\n  Text encoder + tokenizer (~443MB, fp32) will also be downloaded.\n");
 
             // Default to option 1 (non-interactive for CI/automation)
-            let selection = 1;
             tracing::info!("Downloading Base (224) variant (default)...");
 
-            // Create HTTP client once for all downloads (connection pool reuse)
             let client = reqwest::Client::new();
 
-            let variants_to_download: Vec<usize> = match selection {
-                1 => vec![0],
-                2 => vec![1],
-                3 => vec![0, 1],
-                _ => vec![0],
-            };
-
-            // Download selected vision model(s)
-            for &idx in &variants_to_download {
-                let variant = &VISION_VARIANTS[idx];
-                let variant_dir = model_dir.join(variant.name);
-                let dest = variant_dir.join(VISUAL_MODEL_LOCAL_NAME);
-
-                if dest.exists() {
-                    tracing::info!("{} already exists at {:?}", variant.label, dest);
-                    continue;
-                }
-
-                std::fs::create_dir_all(&variant_dir)?;
-
-                let url = format!(
-                    "https://huggingface.co/{}/resolve/main/{}",
-                    variant.repo, variant.remote_path
-                );
-
-                tracing::info!("Downloading {} vision encoder...", variant.label);
-                tracing::info!("  Source: {}", url);
-                tracing::info!("  Destination: {:?}", dest);
-
-                download_file(&client, &url, &dest, Some(variant.blake3)).await?;
-
-                let file_size = std::fs::metadata(&dest)?.len();
-                tracing::info!(
-                    "  {} complete ({:.1} MB)",
-                    variant.label,
-                    file_size as f64 / (1024.0 * 1024.0)
-                );
-            }
-
-            // Download text encoder (shared, goes to models/ root)
-            let text_dest = model_dir.join(TEXT_MODEL_LOCAL_NAME);
-            if text_dest.exists() {
-                tracing::info!("Text encoder already exists at {:?}", text_dest);
-            } else {
-                std::fs::create_dir_all(&model_dir)?;
-                let url = format!(
-                    "https://huggingface.co/{}/resolve/main/{}",
-                    TEXT_ENCODER_REPO, TEXT_ENCODER_REMOTE
-                );
-                tracing::info!("Downloading text encoder (fp32)...");
-                tracing::info!("  Source: {}", url);
-                tracing::info!("  Destination: {:?}", text_dest);
-                download_file(&client, &url, &text_dest, Some(TEXT_ENCODER_BLAKE3)).await?;
-                let file_size = std::fs::metadata(&text_dest)?.len();
-                tracing::info!(
-                    "  Text encoder complete ({:.1} MB)",
-                    file_size as f64 / (1024.0 * 1024.0)
-                );
-            }
-
-            // Download tokenizer (shared, goes to models/ root)
-            let tok_dest = model_dir.join(TOKENIZER_LOCAL_NAME);
-            if tok_dest.exists() {
-                tracing::info!("Tokenizer already exists at {:?}", tok_dest);
-            } else {
-                let url = format!(
-                    "https://huggingface.co/{}/resolve/main/{}",
-                    TEXT_ENCODER_REPO, TOKENIZER_REMOTE
-                );
-                tracing::info!("Downloading tokenizer...");
-                tracing::info!("  Source: {}", url);
-                tracing::info!("  Destination: {:?}", tok_dest);
-                download_file(&client, &url, &tok_dest, Some(TOKENIZER_BLAKE3)).await?;
-                tracing::info!("  Tokenizer complete");
-            }
-
-            // Install vocabulary files
+            download_vision(&[0], &config, &client).await?;
+            download_shared(&config, &client).await?;
             install_vocabulary(&config)?;
 
             tracing::info!("All downloads complete.");
@@ -248,7 +299,7 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
 }
 
 /// Install embedded vocabulary files to the vocabulary directory.
-fn install_vocabulary(config: &Config) -> anyhow::Result<()> {
+pub fn install_vocabulary(config: &Config) -> anyhow::Result<()> {
     let vocab_dir = config.vocabulary_dir();
 
     let nouns_path = vocab_dir.join("wordnet_nouns.txt");

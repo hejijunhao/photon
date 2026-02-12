@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.5.0](#050---2026-02-12)** — Interactive CLI: guided mode via bare `photon` invocation — 8-step process wizard, model management, LLM setup, config viewer, custom theme
 - **[0.4.17](#0417---2026-02-12)** — process.rs decomposition: `execute()` reduced from ~475 to 16 lines, 5 enrichment duplicates consolidated into 2 helpers
 - **[0.4.16](#0416---2026-02-12)** — Streaming batch output: JSONL file writes stream per-image instead of collecting all results in memory
 - **[0.4.15](#0415---2026-02-12)** — Model download checksum verification: BLAKE3 integrity checks for all 4 model files, auto-removal of corrupt downloads
@@ -30,6 +31,66 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.5.0] - 2026-02-12
+
+### Summary
+
+Interactive CLI mode. Running bare `photon` (no subcommand) on a TTY now launches a guided interactive experience using `dialoguer` prompts, walking users through model management, image processing, and LLM configuration — all without memorizing CLI flags. Non-TTY invocations (pipes, scripts) print help as before. The interactive module delegates entirely to the existing `cli::process::execute()` pipeline — zero duplication of processing logic. Implemented across 10 phases: foundation, theme, main menu, prerequisite refactors, guided models, guided process, LLM setup, post-process menu, config viewer, and polish. 136 tests passing, zero clippy warnings.
+
+### Added
+
+- **Interactive entry point** (`cli/interactive/mod.rs`, ~180 lines) — `Option<Commands>` routing in `main.rs` with `std::io::IsTerminal` TTY detection; bare `photon` on TTY → `interactive::run()`, non-TTY → help text
+- **Custom theme** (`cli/interactive/theme.rs`, ~50 lines) — `photon_theme()` returns a `ColorfulTheme` with cyan `?` prompt prefix, `▸` active indicator, green `✓` success, red `✗` error; `print_banner()` renders a box-drawn version banner to stderr using `photon_core::VERSION`
+- **Main menu loop** — `Select` with 4 options (Process images / Download models / Configure settings / Exit) using `interact_opt()` for clean Esc/Ctrl+C handling
+- **Guided model management** (`cli/interactive/models.rs`, ~147 lines) — displays installed/missing status with checkmarks and file sizes; dynamic menu adapts based on what's missing (individual downloads, "download both", re-download all); delegates to extracted `download_vision()` / `download_shared()` / `install_vocabulary()` functions
+- **Guided process flow** (`cli/interactive/process.rs`, ~250 lines) — 8-step wizard: input path (with `shellexpand::tilde()` and re-prompt on invalid/empty), file discovery with count+size display, model check with inline download offer, quality preset selection (Fast 224px / High 384px), LLM provider setup (delegates to `setup.rs`), output format selection (adaptive: single-file defaults to stdout, batch defaults to JSONL file), confirmation summary, and `ProcessArgs { ... } → execute()` delegation
+- **LLM setup flow** (`cli/interactive/setup.rs`, ~278 lines) — provider selection (Skip / Anthropic / OpenAI / Ollama / Hyperbolic); API key handling via `Password` prompt with env var and config file detection (`config_has_key()` treats `${...}` placeholders as unset); save-to-config option using `toml::Table` manipulation (`save_key_to_config()`); provider-specific model presets with "Custom model name" option
+- **Post-process menu** — "Process more images" (recursive via `Box::pin()`) or "Back to main menu" after processing completes
+- **Config viewer** (~100 lines in `mod.rs`) — read-only summary of 8 key settings (config file existence, model dir, parallel workers, thumbnail, embedding model, tagging, log level, LLM providers via `llm_summary()` helper); "View full config (TOML)" and "Show config file path" actions
+- **`handle_interrupt()` helper** — converts `dialoguer::Error::IO(Interrupted)` → `Ok(None)` for clean Ctrl+C handling across all 5 `Input::interact_text()` call sites
+- **Empty directory re-prompt** — combined input path + file discovery into a single validation loop that re-prompts on missing paths or empty directories instead of exiting
+
+### Changed
+
+- **`main.rs`** — `Cli.command` type changed from `Commands` to `Option<Commands>`; existing `Some(Commands::Process(...))` / `Some(Commands::Models(...))` / `Some(Commands::Config(...))` arms unchanged; `None` arm added for interactive routing
+- **`cli/mod.rs`** — added `pub mod interactive;`
+- **`cli/process.rs`** — added manual `Default` impl for `ProcessArgs` (15 fields matching all `#[arg(default_value = ...)]` annotations) so the interactive module can build args via struct update syntax
+- **`cli/models.rs`** — extracted 4 public items from monolithic `execute()`: `InstalledModels` struct (5 bool fields), `check_installed(config)`, `download_vision(indices, config, client)`, `download_shared(config, client)`; added `InstalledModels::can_process()` (requires ≥1 vision model + text encoder + tokenizer); added `VARIANT_LABELS` const; changed `install_vocabulary()` visibility to `pub`; `ModelsCommand::Download` arm refactored from ~90 inline lines to 3 function calls
+
+### New Dependencies
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| `dialoguer` | 0.11 | Terminal prompts: Select, Input, Confirm, Password |
+| `console` | 0.15 | Styled terminal output (colors, bold) — also transitive dep of dialoguer |
+| `toml` | 0.8 | Config file editing for LLM API key persistence |
+| `shellexpand` | 3 | `~` path expansion in user-entered paths |
+
+### New Files
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `crates/photon/src/cli/interactive/mod.rs` | ~180 | Entry point, main menu, config viewer, `handle_interrupt()` |
+| `crates/photon/src/cli/interactive/theme.rs` | ~50 | Custom `ColorfulTheme` + banner |
+| `crates/photon/src/cli/interactive/process.rs` | ~250 | 8-step guided process wizard + post-process menu |
+| `crates/photon/src/cli/interactive/models.rs` | ~147 | Guided model management with dynamic menus |
+| `crates/photon/src/cli/interactive/setup.rs` | ~278 | LLM provider selection, API key handling, model picker |
+
+### Design Decisions
+
+- **`interact_opt()` everywhere** — all `Select` and `Confirm` widgets use `_opt` variants, returning `Ok(None)` on Esc/Ctrl+C instead of propagating errors. `Input` widgets (which lack `_opt`) use the `handle_interrupt()` wrapper.
+- **`ColorfulTheme` customization over `Theme` trait impl** — overriding 10 fields on `ColorfulTheme` gives all 20+ trait methods for free in ~15 lines, vs ~150 lines of manual `Theme` impl.
+- **Zero processing duplication** — the interactive module only handles user interaction. All processing goes through `ProcessArgs → execute()`. The interactive module never touches `ImageProcessor`, `EmbeddingEngine`, or any pipeline type directly.
+- **`unsafe { std::env::set_var() }`** — required since Rust 1.83 deprecated safe `set_var`. Used only for session-only API key persistence in the single-threaded CLI context. Documented in code.
+- **`Box::pin()` for recursive async** — "Process more images" recurses into `guided_process()`, requiring `Pin<Box<dyn Future>>` since the compiler can't determine the future's size for recursive async functions.
+- **TTY detection via `std::io::IsTerminal`** — stable since Rust 1.70, no external crate needed. Ensures `echo "test" | photon` prints help instead of hanging on interactive prompts.
+
+### Tests
+
+136 tests passing (unchanged — interactive flows are inherently manual), zero clippy warnings, zero formatting violations.
 
 ---
 
