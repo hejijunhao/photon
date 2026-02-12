@@ -24,10 +24,10 @@
 
 | Phase | Status | Notes |
 |-------|--------|-------|
-| 1. Test Coverage | Pending | Unit tests for all pure/testable functions |
-| 2. Safety & Robustness | Pending | `unsafe set_var` removal, download error handling, config comments |
-| 3. UX Edge Cases | Pending | Output path validation, defensive matches, empty-key guard |
-| 4. Polish | Pending | Recursive async → loop, consistent MB units, theme dedup |
+| 1. Test Coverage | **Done** | 21 new tests, 164 total. See `docs/completions/hardening-phase-1-tests.md` |
+| 2. Safety & Robustness | **Done** | Zero `unsafe`, `toml_edit`, graceful downloads. See `docs/completions/hardening-phase-2-safety.md` |
+| 3. UX Edge Cases | **Done** | Path validation, overwrite confirm, defensive matches. See `docs/completions/hardening-phase-3-ux.md` |
+| 4. Polish | **Done** | Recursive async → loop, consistent SI MB, style dedup. See below. |
 
 ---
 

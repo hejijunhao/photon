@@ -52,7 +52,7 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
             Some(1) => models::guided_models(config).await?,
             Some(2) => show_config(config)?,
             Some(3) | None => break, // Exit or Ctrl+C / Esc
-            _ => unreachable!(),
+            _ => {}
         }
     }
 
@@ -159,7 +159,7 @@ fn show_config(config: &Config) -> anyhow::Result<()> {
                 eprintln!();
             }
             Some(2) | None => break, // Back or Esc / Ctrl+C
-            _ => unreachable!(),
+            _ => break,
         }
     }
 
@@ -195,5 +195,95 @@ fn llm_summary(config: &Config) -> String {
         "none configured".to_string()
     } else {
         providers.join(", ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use photon_core::config::{AnthropicConfig, HyperbolicConfig, OllamaConfig, OpenAiConfig};
+    use std::io::{self, ErrorKind};
+
+    // ── handle_interrupt tests ──────────────────────────────────────────
+
+    #[test]
+    fn handle_interrupt_ok_returns_some() {
+        let result: dialoguer::Result<i32> = Ok(42);
+        let wrapped = handle_interrupt(result).unwrap();
+        assert_eq!(wrapped, Some(42));
+    }
+
+    #[test]
+    fn handle_interrupt_interrupted_returns_none() {
+        let io_err = io::Error::new(ErrorKind::Interrupted, "user pressed Ctrl+C");
+        let result: dialoguer::Result<i32> = Err(dialoguer::Error::IO(io_err));
+        let wrapped = handle_interrupt(result).unwrap();
+        assert_eq!(wrapped, None);
+    }
+
+    #[test]
+    fn handle_interrupt_other_io_error_propagates() {
+        let io_err = io::Error::new(ErrorKind::BrokenPipe, "pipe broke");
+        let result: dialoguer::Result<i32> = Err(dialoguer::Error::IO(io_err));
+        let wrapped = handle_interrupt(result);
+        assert!(wrapped.is_err());
+    }
+
+    // ── llm_summary tests ───────────────────────────────────────────────
+
+    #[test]
+    fn llm_summary_no_providers_configured() {
+        let config = Config::default();
+        assert_eq!(llm_summary(&config), "none configured");
+    }
+
+    #[test]
+    fn llm_summary_anthropic_enabled() {
+        let mut config = Config::default();
+        config.llm.anthropic = Some(AnthropicConfig {
+            enabled: true,
+            api_key: "sk-test".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+        });
+        assert_eq!(llm_summary(&config), "Anthropic");
+    }
+
+    #[test]
+    fn llm_summary_multiple_providers_enabled() {
+        let mut config = Config::default();
+        config.llm.anthropic = Some(AnthropicConfig {
+            enabled: true,
+            api_key: "sk-test".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+        });
+        config.llm.ollama = Some(OllamaConfig {
+            enabled: true,
+            endpoint: "http://localhost:11434".to_string(),
+            model: "llava".to_string(),
+        });
+        config.llm.openai = Some(OpenAiConfig {
+            enabled: true,
+            api_key: "sk-test".to_string(),
+            model: "gpt-4o".to_string(),
+        });
+        // Order follows the function: Ollama, Anthropic, OpenAI
+        assert_eq!(llm_summary(&config), "Ollama, Anthropic, OpenAI");
+    }
+
+    #[test]
+    fn llm_summary_provider_present_but_disabled() {
+        let mut config = Config::default();
+        config.llm.anthropic = Some(AnthropicConfig {
+            enabled: false,
+            api_key: "sk-test".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+        });
+        config.llm.hyperbolic = Some(HyperbolicConfig {
+            enabled: false,
+            endpoint: "https://api.hyperbolic.xyz/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            model: "meta-llama/Llama-3.2-11B-Vision-Instruct".to_string(),
+        });
+        assert_eq!(llm_summary(&config), "none configured");
     }
 }

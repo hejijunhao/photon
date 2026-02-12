@@ -11,6 +11,8 @@ use super::theme::photon_theme;
 pub struct LlmSelection {
     pub provider: LlmProvider,
     pub model: String,
+    /// API key entered during this session (not from env/config).
+    pub api_key: Option<String>,
 }
 
 /// Guide the user through selecting an LLM provider, API key, and model.
@@ -18,6 +20,8 @@ pub struct LlmSelection {
 /// Returns `None` if the user skips LLM or cancels.
 pub fn select_llm_provider(config: &Config) -> anyhow::Result<Option<LlmSelection>> {
     let theme = photon_theme();
+    let dim = Style::new().for_stderr().dim();
+    let warn = Style::new().for_stderr().yellow();
 
     // Step 1: Choose provider
     let providers = &[
@@ -43,18 +47,18 @@ pub fn select_llm_provider(config: &Config) -> anyhow::Result<Option<LlmSelectio
     };
 
     // Step 2: API key handling (Ollama doesn't need one)
+    let mut session_api_key: Option<String> = None;
+
     if !matches!(provider, LlmProvider::Ollama) {
         let env_var = env_var_for(&provider);
         let has_key = std::env::var(env_var).is_ok() || config_has_key(config, &provider);
 
         if has_key {
-            let dim = Style::new().for_stderr().dim();
             eprintln!(
                 "  {}",
                 dim.apply_to(format!("Using existing API key from {env_var} / config"))
             );
         } else {
-            let warn = Style::new().for_stderr().yellow();
             eprintln!("  {}", warn.apply_to(format!("{env_var} not set.")));
 
             let key: String = match Password::with_theme(&theme)
@@ -79,21 +83,18 @@ pub fn select_llm_provider(config: &Config) -> anyhow::Result<Option<LlmSelectio
 
             match save_choice {
                 Some(0) => {
-                    // Persist to config TOML
+                    // Persist to config TOML and also keep for this session
                     if let Err(e) = save_key_to_config(&provider, &key) {
-                        let warn = Style::new().for_stderr().yellow();
                         eprintln!(
                             "  {}",
                             warn.apply_to(format!("Could not save to config: {e}"))
                         );
-                        eprintln!("  Setting {env_var} for this session instead.");
-                        // SAFETY: single-threaded CLI context, no concurrent env reads
-                        unsafe { std::env::set_var(env_var, &key) };
+                        eprintln!("  Using key for this session only.");
                     }
+                    session_api_key = Some(key);
                 }
                 Some(1) => {
-                    // SAFETY: single-threaded CLI context, no concurrent env reads
-                    unsafe { std::env::set_var(env_var, &key) };
+                    session_api_key = Some(key);
                 }
                 _ => return Ok(None), // Cancelled / Esc
             }
@@ -106,7 +107,11 @@ pub fn select_llm_provider(config: &Config) -> anyhow::Result<Option<LlmSelectio
         return Ok(None);
     };
 
-    Ok(Some(LlmSelection { provider, model }))
+    Ok(Some(LlmSelection {
+        provider,
+        model,
+        api_key: session_api_key,
+    }))
 }
 
 /// Prompt for model name based on provider.
@@ -160,7 +165,10 @@ fn select_model(
                     .default("llama3.2-vision".to_string())
                     .interact_text(),
             )?;
-            Ok(model)
+            match model {
+                Some(m) if !m.trim().is_empty() => Ok(Some(m)),
+                _ => Ok(None),
+            }
         }
         LlmProvider::Hyperbolic => {
             let model = super::handle_interrupt(
@@ -169,7 +177,10 @@ fn select_model(
                     .default("meta-llama/Llama-3.2-11B-Vision-Instruct".to_string())
                     .interact_text(),
             )?;
-            Ok(model)
+            match model {
+                Some(m) if !m.trim().is_empty() => Ok(Some(m)),
+                _ => Ok(None),
+            }
         }
     }
 }
@@ -192,7 +203,7 @@ fn prompt_custom_model(theme: &dialoguer::theme::ColorfulTheme) -> anyhow::Resul
 }
 
 /// Get the environment variable name for a provider's API key.
-fn env_var_for(provider: &LlmProvider) -> &'static str {
+pub(crate) fn env_var_for(provider: &LlmProvider) -> &'static str {
     match provider {
         LlmProvider::Anthropic => "ANTHROPIC_API_KEY",
         LlmProvider::Openai => "OPENAI_API_KEY",
@@ -202,7 +213,7 @@ fn env_var_for(provider: &LlmProvider) -> &'static str {
 }
 
 /// Human-readable label for a provider.
-fn provider_label(provider: &LlmProvider) -> &'static str {
+pub(crate) fn provider_label(provider: &LlmProvider) -> &'static str {
     match provider {
         LlmProvider::Anthropic => "Anthropic",
         LlmProvider::Openai => "OpenAI",
@@ -212,7 +223,7 @@ fn provider_label(provider: &LlmProvider) -> &'static str {
 }
 
 /// Check if the config already has an API key set for the provider.
-fn config_has_key(config: &Config, provider: &LlmProvider) -> bool {
+pub(crate) fn config_has_key(config: &Config, provider: &LlmProvider) -> bool {
     match provider {
         LlmProvider::Anthropic => config
             .llm
@@ -233,25 +244,17 @@ fn config_has_key(config: &Config, provider: &LlmProvider) -> bool {
     }
 }
 
-/// Save an API key to the Photon config file.
+/// Save an API key to the Photon config file, preserving existing comments.
 fn save_key_to_config(provider: &LlmProvider, key: &str) -> anyhow::Result<()> {
     let config_path = Config::default_path();
 
-    // Read existing config or start fresh
     let content = if config_path.exists() {
         std::fs::read_to_string(&config_path)?
     } else {
         String::new()
     };
 
-    let mut doc: toml::Table = content.parse().unwrap_or_default();
-
-    // Ensure [llm.<provider>] section exists and set the key
-    let llm = doc
-        .entry("llm")
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("llm section is not a table"))?;
+    let mut doc: toml_edit::DocumentMut = content.parse().unwrap_or_default();
 
     let section_name = match provider {
         LlmProvider::Anthropic => "anthropic",
@@ -260,18 +263,26 @@ fn save_key_to_config(provider: &LlmProvider, key: &str) -> anyhow::Result<()> {
         LlmProvider::Ollama => return Ok(()), // no key to save
     };
 
-    let section = llm
-        .entry(section_name)
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("{section_name} section is not a table"))?;
+    // Ensure [llm] table exists
+    if !doc.contains_key("llm") {
+        doc["llm"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
 
-    section.insert("api_key".to_string(), toml::Value::String(key.to_string()));
-    section
-        .entry("enabled")
-        .or_insert(toml::Value::Boolean(true));
+    // Ensure [llm.<provider>] table exists
+    if !doc["llm"]
+        .as_table()
+        .is_some_and(|t| t.contains_key(section_name))
+    {
+        doc["llm"][section_name] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
 
-    // Write back
+    doc["llm"][section_name]["api_key"] = toml_edit::value(key);
+
+    // Only set enabled if not already present
+    if doc["llm"][section_name].get("enabled").is_none() {
+        doc["llm"][section_name]["enabled"] = toml_edit::value(true);
+    }
+
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -284,4 +295,78 @@ fn save_key_to_config(provider: &LlmProvider, key: &str) -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use photon_core::config::AnthropicConfig;
+
+    // ── config_has_key tests ────────────────────────────────────────────
+
+    #[test]
+    fn config_has_key_anthropic_with_real_key() {
+        let mut config = Config::default();
+        config.llm.anthropic = Some(AnthropicConfig {
+            enabled: true,
+            api_key: "sk-ant-real-key-123".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+        });
+        assert!(config_has_key(&config, &LlmProvider::Anthropic));
+    }
+
+    #[test]
+    fn config_has_key_anthropic_empty_key() {
+        let mut config = Config::default();
+        config.llm.anthropic = Some(AnthropicConfig {
+            enabled: true,
+            api_key: String::new(),
+            model: "claude-sonnet-4-20250514".to_string(),
+        });
+        assert!(!config_has_key(&config, &LlmProvider::Anthropic));
+    }
+
+    #[test]
+    fn config_has_key_anthropic_template_key() {
+        let mut config = Config::default();
+        config.llm.anthropic = Some(AnthropicConfig {
+            enabled: true,
+            api_key: "${ANTHROPIC_API_KEY}".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+        });
+        assert!(!config_has_key(&config, &LlmProvider::Anthropic));
+    }
+
+    #[test]
+    fn config_has_key_anthropic_section_none() {
+        let config = Config::default();
+        // Default LlmConfig has all providers as None
+        assert!(!config_has_key(&config, &LlmProvider::Anthropic));
+    }
+
+    #[test]
+    fn config_has_key_ollama_always_true() {
+        let config = Config::default();
+        assert!(config_has_key(&config, &LlmProvider::Ollama));
+    }
+
+    // ── env_var_for tests ───────────────────────────────────────────────
+
+    #[test]
+    fn env_var_for_all_providers() {
+        assert_eq!(env_var_for(&LlmProvider::Anthropic), "ANTHROPIC_API_KEY");
+        assert_eq!(env_var_for(&LlmProvider::Openai), "OPENAI_API_KEY");
+        assert_eq!(env_var_for(&LlmProvider::Hyperbolic), "HYPERBOLIC_API_KEY");
+        assert_eq!(env_var_for(&LlmProvider::Ollama), "OLLAMA_HOST");
+    }
+
+    // ── provider_label tests ────────────────────────────────────────────
+
+    #[test]
+    fn provider_label_all_providers() {
+        assert_eq!(provider_label(&LlmProvider::Anthropic), "Anthropic");
+        assert_eq!(provider_label(&LlmProvider::Openai), "OpenAI");
+        assert_eq!(provider_label(&LlmProvider::Hyperbolic), "Hyperbolic");
+        assert_eq!(provider_label(&LlmProvider::Ollama), "Ollama");
+    }
 }

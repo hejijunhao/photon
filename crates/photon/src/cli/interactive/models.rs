@@ -59,26 +59,58 @@ pub async fn guided_models(config: &Config) -> anyhow::Result<()> {
             Some(idx) => match &actions[idx] {
                 ModelAction::DownloadVision(indices) => {
                     let client = reqwest::Client::new();
-                    download_vision(indices, config, &client).await?;
-                    download_shared(config, &client).await?;
-                    install_vocabulary(config)?;
-                    eprintln!();
-                    let done = Style::new().for_stderr().green();
-                    eprintln!("{}", done.apply_to("  Downloads complete."));
+                    let download_result = async {
+                        download_vision(indices, config, &client).await?;
+                        download_shared(config, &client).await?;
+                        install_vocabulary(config)?;
+                        Ok::<(), anyhow::Error>(())
+                    }
+                    .await;
+
+                    match download_result {
+                        Ok(()) => {
+                            let done = Style::new().for_stderr().green();
+                            eprintln!("{}", done.apply_to("  Downloads complete."));
+                        }
+                        Err(e) => {
+                            let err_style = Style::new().for_stderr().red();
+                            eprintln!("  {} Download failed: {e}", err_style.apply_to("✗"));
+                            eprintln!("  Check your network connection and try again.");
+                        }
+                    }
                     eprintln!();
                 }
                 ModelAction::DownloadShared => {
                     let client = reqwest::Client::new();
-                    download_shared(config, &client).await?;
-                    eprintln!();
-                    let done = Style::new().for_stderr().green();
-                    eprintln!("{}", done.apply_to("  Downloads complete."));
+                    let download_result = download_shared(config, &client).await;
+
+                    match download_result {
+                        Ok(()) => {
+                            let done = Style::new().for_stderr().green();
+                            eprintln!("{}", done.apply_to("  Downloads complete."));
+                        }
+                        Err(e) => {
+                            let err_style = Style::new().for_stderr().red();
+                            eprintln!("  {} Download failed: {e}", err_style.apply_to("✗"));
+                            eprintln!("  Check your network connection and try again.");
+                        }
+                    }
                     eprintln!();
                 }
                 ModelAction::InstallVocabulary => {
-                    install_vocabulary(config)?;
-                    let done = Style::new().for_stderr().green();
-                    eprintln!("{}", done.apply_to("  Vocabulary installed."));
+                    match install_vocabulary(config) {
+                        Ok(()) => {
+                            let done = Style::new().for_stderr().green();
+                            eprintln!("{}", done.apply_to("  Vocabulary installed."));
+                        }
+                        Err(e) => {
+                            let err_style = Style::new().for_stderr().red();
+                            eprintln!(
+                                "  {} Vocabulary install failed: {e}",
+                                err_style.apply_to("✗")
+                            );
+                        }
+                    }
                     eprintln!();
                 }
                 ModelAction::ShowPath => {

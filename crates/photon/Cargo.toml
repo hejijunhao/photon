@@ -41,8 +41,8 @@ indicatif = "0.17"
 dialoguer = "0.11"
 console = "0.15"
 
-# Config editing (LLM key persistence)
-toml.workspace = true
+# Config editing (LLM key persistence — preserves comments)
+toml_edit = "0.22"
 
 # Path expansion (~ handling in interactive prompts)
 shellexpand.workspace = true

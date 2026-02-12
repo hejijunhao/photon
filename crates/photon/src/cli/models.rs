@@ -142,7 +142,7 @@ pub async fn download_vision(
         tracing::info!(
             "  {} complete ({:.1} MB)",
             variant.label,
-            file_size as f64 / (1024.0 * 1024.0)
+            file_size as f64 / 1_000_000.0
         );
     }
 
@@ -170,7 +170,7 @@ pub async fn download_shared(config: &Config, client: &reqwest::Client) -> anyho
         let file_size = std::fs::metadata(&text_dest)?.len();
         tracing::info!(
             "  Text encoder complete ({:.1} MB)",
-            file_size as f64 / (1024.0 * 1024.0)
+            file_size as f64 / 1_000_000.0
         );
     }
 
@@ -349,7 +349,7 @@ async fn download_file(
 
     let total_size = response.content_length();
     if let Some(size) = total_size {
-        tracing::info!("  Size: {:.1} MB", size as f64 / (1024.0 * 1024.0));
+        tracing::info!("  Size: {:.1} MB", size as f64 / 1_000_000.0);
     }
 
     let mut file = tokio::fs::File::create(dest).await?;
@@ -454,5 +454,91 @@ mod tests {
             "0000000000000000000000000000000000000000000000000000000000000000",
         );
         assert!(result.is_err());
+    }
+
+    // ── InstalledModels::can_process tests ──────────────────────────────
+
+    #[test]
+    fn can_process_all_present() {
+        let m = InstalledModels {
+            vision_224: true,
+            vision_384: true,
+            text_encoder: true,
+            tokenizer: true,
+            vocabulary: true,
+        };
+        assert!(m.can_process());
+    }
+
+    #[test]
+    fn can_process_only_224_with_shared() {
+        let m = InstalledModels {
+            vision_224: true,
+            vision_384: false,
+            text_encoder: true,
+            tokenizer: true,
+            vocabulary: false,
+        };
+        assert!(m.can_process());
+    }
+
+    #[test]
+    fn can_process_only_384_with_shared() {
+        let m = InstalledModels {
+            vision_224: false,
+            vision_384: true,
+            text_encoder: true,
+            tokenizer: true,
+            vocabulary: false,
+        };
+        assert!(m.can_process());
+    }
+
+    #[test]
+    fn can_process_no_vision_models() {
+        let m = InstalledModels {
+            vision_224: false,
+            vision_384: false,
+            text_encoder: true,
+            tokenizer: true,
+            vocabulary: true,
+        };
+        assert!(!m.can_process());
+    }
+
+    #[test]
+    fn can_process_vision_but_no_text_encoder() {
+        let m = InstalledModels {
+            vision_224: true,
+            vision_384: false,
+            text_encoder: false,
+            tokenizer: true,
+            vocabulary: true,
+        };
+        assert!(!m.can_process());
+    }
+
+    #[test]
+    fn can_process_vision_but_no_tokenizer() {
+        let m = InstalledModels {
+            vision_224: true,
+            vision_384: false,
+            text_encoder: true,
+            tokenizer: false,
+            vocabulary: true,
+        };
+        assert!(!m.can_process());
+    }
+
+    #[test]
+    fn can_process_all_false() {
+        let m = InstalledModels {
+            vision_224: false,
+            vision_384: false,
+            text_encoder: false,
+            tokenizer: false,
+            vocabulary: false,
+        };
+        assert!(!m.can_process());
     }
 }

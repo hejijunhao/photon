@@ -73,6 +73,10 @@ pub struct ProcessArgs {
     /// Disable ancestor deduplication in tags
     #[arg(long)]
     pub no_dedup_tags: bool,
+
+    /// API key for the selected LLM provider (session-only, set by interactive mode).
+    #[arg(skip)]
+    pub api_key: Option<String>,
 }
 
 /// Supported output formats.
@@ -149,6 +153,7 @@ impl Default for ProcessArgs {
             llm_model: None,
             show_tag_paths: false,
             no_dedup_tags: false,
+            api_key: None,
         }
     }
 }
@@ -730,8 +735,15 @@ fn create_enricher(args: &ProcessArgs, config: &Config) -> anyhow::Result<Option
         None => return Ok(None),
     };
 
+    // If the interactive flow provided a session API key, inject it into
+    // the config so the factory picks it up without needing env vars.
+    let mut llm_config = config.llm.clone();
+    if let Some(ref key) = args.api_key {
+        inject_api_key(&mut llm_config, args.llm.as_ref().unwrap(), key);
+    }
+
     let provider =
-        LlmProviderFactory::create(&provider_name, &config.llm, args.llm_model.as_deref())?;
+        LlmProviderFactory::create(&provider_name, &llm_config, args.llm_model.as_deref())?;
 
     let options = EnrichOptions {
         parallel: args.parallel.min(8), // Cap LLM concurrency
@@ -743,10 +755,89 @@ fn create_enricher(args: &ProcessArgs, config: &Config) -> anyhow::Result<Option
     Ok(Some(Enricher::new(provider, options)))
 }
 
+/// Inject a session API key into the LLM config for the specified provider.
+fn inject_api_key(
+    llm_config: &mut photon_core::config::LlmConfig,
+    provider: &LlmProvider,
+    key: &str,
+) {
+    match provider {
+        LlmProvider::Anthropic => {
+            let cfg = llm_config.anthropic.get_or_insert_with(Default::default);
+            cfg.api_key = key.to_string();
+        }
+        LlmProvider::Openai => {
+            let cfg = llm_config.openai.get_or_insert_with(Default::default);
+            cfg.api_key = key.to_string();
+        }
+        LlmProvider::Hyperbolic => {
+            let cfg = llm_config.hyperbolic.get_or_insert_with(Default::default);
+            cfg.api_key = key.to_string();
+        }
+        LlmProvider::Ollama => {} // Ollama doesn't use API keys
+    }
+}
+
 fn log_enrichment_stats(succeeded: usize, failed: usize) {
     if failed > 0 {
         tracing::warn!("LLM enrichment: {} succeeded, {} failed", succeeded, failed);
     } else {
         tracing::info!("LLM enrichment: {} succeeded", succeeded);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn process_args_default_parallel() {
+        let args = ProcessArgs::default();
+        assert_eq!(args.parallel, 4);
+    }
+
+    #[test]
+    fn process_args_default_format_is_json() {
+        let args = ProcessArgs::default();
+        assert!(matches!(args.format, OutputFormat::Json));
+    }
+
+    #[test]
+    fn process_args_default_quality_is_fast() {
+        let args = ProcessArgs::default();
+        assert!(matches!(args.quality, Quality::Fast));
+    }
+
+    #[test]
+    fn process_args_default_thumbnail_size() {
+        let args = ProcessArgs::default();
+        assert_eq!(args.thumbnail_size, 256);
+    }
+
+    #[test]
+    fn process_args_default_bool_flags_are_false() {
+        let args = ProcessArgs::default();
+        assert!(!args.skip_existing);
+        assert!(!args.no_thumbnail);
+        assert!(!args.no_embedding);
+        assert!(!args.no_tagging);
+        assert!(!args.no_description);
+        assert!(!args.show_tag_paths);
+        assert!(!args.no_dedup_tags);
+    }
+
+    #[test]
+    fn process_args_default_option_fields_are_none() {
+        let args = ProcessArgs::default();
+        assert!(args.output.is_none());
+        assert!(args.llm.is_none());
+        assert!(args.llm_model.is_none());
+    }
+
+    #[test]
+    fn process_args_default_input_is_empty_path() {
+        let args = ProcessArgs::default();
+        assert_eq!(args.input, PathBuf::new());
     }
 }

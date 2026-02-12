@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.5.1](#051---2026-02-12)** — Interactive CLI hardening: 28 unit tests, `unsafe set_var` elimination, `toml_edit` comment-preserving config, output path validation, recursive async → loop
 - **[0.5.0](#050---2026-02-12)** — Interactive CLI: guided mode via bare `photon` invocation — 8-step process wizard, model management, LLM setup, config viewer, custom theme
 - **[0.4.17](#0417---2026-02-12)** — process.rs decomposition: `execute()` reduced from ~475 to 16 lines, 5 enrichment duplicates consolidated into 2 helpers
 - **[0.4.16](#0416---2026-02-12)** — Streaming batch output: JSONL file writes stream per-image instead of collecting all results in memory
@@ -31,6 +32,45 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.5.1] - 2026-02-12
+
+### Summary
+
+Interactive CLI hardening across 4 phases — raising assessed quality from 7/10 to 9/10. Added 28 unit tests for all pure functions in the interactive module (test count: 136 → 164). Eliminated both `unsafe set_var` calls by threading API keys through the type system. Replaced `toml` with `toml_edit` to preserve config file comments during API key saves. Made download errors graceful instead of session-killing. Added output path validation with overwrite confirmation. Replaced recursive `Box::pin()` async with a simple loop. Standardized MB display units. Zero `unsafe`, zero clippy warnings, zero formatting violations.
+
+### Added
+
+- **28 unit tests** across 4 files (`mod.rs`, `setup.rs`, `models.rs`, `process.rs`) — covers `handle_interrupt()` (3 tests), `llm_summary()` (4 tests), `config_has_key()` (5 tests), `env_var_for()` + `provider_label()` (2 tests), `InstalledModels::can_process()` (7 tests), `ProcessArgs::default()` (7 tests)
+- **`api_key: Option<String>`** field on `ProcessArgs` (`#[arg(skip)]`) — carries session-only API keys from interactive mode without mutating environment variables
+- **`inject_api_key()` helper** in `cli/process.rs` — sets the API key on the appropriate provider config section before factory creation, keeping the key in the type system end-to-end
+- **Output path validation** in `prompt_output_path()` — re-prompts if parent directory doesn't exist; `Confirm` dialog before overwriting existing files (default: no)
+- **Empty model name guards** — Ollama and Hyperbolic `select_model()` arms now filter whitespace-only input via `m.trim().is_empty()`
+
+### Changed
+
+- **`unsafe set_var` → type-threaded API key** — both `unsafe { std::env::set_var(...) }` calls in `setup.rs` replaced with `LlmSelection.api_key` → `ProcessArgs.api_key` → `inject_api_key()` into cloned config. Zero global state mutation.
+- **`toml` → `toml_edit 0.22`** in `Cargo.toml` — `save_key_to_config()` rewritten with `toml_edit::DocumentMut` to preserve comments, whitespace, and key ordering during round-trips
+- **Graceful download errors** in `interactive/models.rs` — all three download actions (`DownloadVision`, `DownloadShared`, `InstallVocabulary`) wrapped in `match` blocks; failures show `✗ Download failed: <error>` and return to model menu instead of crashing the session
+- **`unreachable!()` → safe fallbacks** — `run()` main menu: `_ => {}` (re-shows menu); `show_config()`: `_ => break` (treats as "Back")
+- **Recursive async → loop** in `guided_process()` — `Box::pin(guided_process(config)).await` replaced with `loop { ... break }`, eliminating heap allocation and unbounded recursion; `theme`/`dim`/`warn`/`bold` styles created once before the loop
+- **Consistent SI MB** — `models.rs` download sizes changed from binary mebibytes (`1024.0 * 1024.0`) to SI megabytes (`1_000_000.0`) to match `process.rs` throughput display
+- **Style allocation dedup** — hoisted repeated `Style::new().for_stderr().*` constructions to function scope in `interactive/process.rs` and `interactive/setup.rs`
+- **Clippy fix** — `save_key_to_config()`: `.map_or(false, |t| ...)` → `.is_some_and(|t| ...)` to satisfy `unnecessary_map_or` lint
+- **Visibility** — `config_has_key`, `env_var_for`, `provider_label` in `setup.rs` changed to `pub(crate)` for testability
+
+### Dependency Changes
+
+| Crate | Before | After | Why |
+|-------|--------|-------|-----|
+| `toml` | `0.8` (workspace) | Removed | Only used by `save_key_to_config()` |
+| `toml_edit` | — | `0.22` | Comment-preserving TOML round-trips |
+
+### Tests
+
+164 tests passing (31 CLI + 123 core + 10 integration), zero clippy warnings, zero formatting violations.
 
 ---
 
