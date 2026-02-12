@@ -34,7 +34,9 @@
       "Bash(ls:*)",
       "Bash(file:*)",
       "Bash(cargo outdated:*)",
-      "Bash(cargo bench:*)"
+      "Bash(cargo bench:*)",
+      "Bash(b3sum:*)",
+      "Bash(cargo install:*)"
     ]
   }
 }

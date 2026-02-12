@@ -6,6 +6,9 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.16](#0416---2026-02-12)** — Streaming batch output: JSONL file writes stream per-image instead of collecting all results in memory
+- **[0.4.15](#0415---2026-02-12)** — Model download checksum verification: BLAKE3 integrity checks for all 4 model files, auto-removal of corrupt downloads
+- **[0.4.14](#0414---2026-02-12)** — Integration tests: 10 end-to-end tests exercising `ImageProcessor::process()` against real fixtures
 - **[0.4.13](#0413---2026-02-11)** — Hardening: lock poisoning diagnostics, config validation with range checks, malformed config warning
 - **[0.4.12](#0412---2026-02-11)** — Benchmark fix: fixture paths now resolve via `CARGO_MANIFEST_DIR` so all 5 benchmarks run from any working directory
 - **[0.4.11](#0411---2026-02-11)** — Final assessment: comprehensive code review (7.5/10), README config fix, test verification
@@ -26,6 +29,90 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.16] - 2026-02-12
+
+### Summary
+
+Streaming batch output for JSONL format. Batch processing now writes each `ProcessedImage` to the output file as it's produced, instead of collecting all results in a `Vec` and writing after the loop. For 1000 images without LLM, memory usage drops from ~6 MB to ~0 MB; with LLM, from ~24 MB to ~6 MB. JSON array format unchanged (collecting is inherent to `[...]`). 136 tests passing, zero clippy warnings.
+
+### Changed
+
+- **`process.rs` — JSONL file streaming** — added `stream_to_file` flag and pre-loop `OutputWriter` initialization; each result written to file immediately inside the processing loop rather than collected in `results` Vec
+- **`process.rs` — collection condition simplified** — `results.push(result)` now only triggers when `llm_enabled || JSON format`; JSONL file output without LLM skips collection entirely
+- **`process.rs` — streaming LLM enrichment** — in JSONL streaming path, `results` Vec moved into enricher spawn (no `.clone()` needed since core records are already on disk); enrichment patches appended to the same file after enricher completes
+- **`process.rs` — post-loop restructured** — output handling split into `if stream_to_file { ... } else { ... }` branches; non-streaming path (JSON format, stdout) wrapped in else with zero logic changes
+
+### Memory impact
+
+| Scenario | Before | After |
+|----------|--------|-------|
+| 1000 images, JSONL, no LLM | ~6 MB in Vec + file write | ~0 MB, streamed to file |
+| 1000 images, JSONL, with LLM | ~24 MB (Vec + clone + all_records) | ~6 MB (Vec for enricher only) |
+| 1000 images, JSON array | ~6 MB in Vec | ~6 MB in Vec (unchanged) |
+
+### Tests
+
+136 tests passing (unchanged), zero clippy warnings, zero formatting violations.
+
+---
+
+## [0.4.15] - 2026-02-12
+
+### Summary
+
+Model download integrity verification. All 4 model files (`visual.onnx` ×2, `text_model.onnx`, `tokenizer.json`) are now verified against embedded BLAKE3 checksums after download. Corrupt or truncated files are automatically removed with a clear error message guiding the user to re-download. Reuses the existing `blake3` crate (no new dependencies) with streaming 64 KB buffer verification. 136 tests passing (+3 verification tests), zero clippy warnings.
+
+### Added
+
+- **`models.rs` — `verify_blake3()`** — standalone function that computes the BLAKE3 hash via streaming `Hasher::content_hash()` (64 KB buffer), compares against the expected digest, and on mismatch removes the corrupt file and returns an error with expected vs actual hashes
+- **`models.rs` — checksum constants** — 4 compile-time BLAKE3 digests for `siglip-base-patch16/visual.onnx`, `siglip-base-patch16-384/visual.onnx`, `text_model.onnx`, and `tokenizer.json`
+- **`models.rs` — `ModelVariant.blake3`** — new `&'static str` field on the vision model variant struct holding the expected hex digest
+
+### Changed
+
+- **`models.rs` — `download_file()` signature** — now accepts `expected_blake3: Option<&str>` as 4th parameter; verification runs after `file.flush()` completes; all 3 call sites updated
+
+### Tests
+
+136 tests passing (+3 from 133), zero clippy warnings, zero formatting violations.
+
+| New test | Validates |
+|----------|-----------|
+| `verify_blake3_correct_hash` | Correct hash passes, file preserved |
+| `verify_blake3_wrong_hash_removes_file` | Wrong hash returns error, file deleted, error contains "Checksum mismatch" and "Corrupt file removed" |
+| `verify_blake3_missing_file` | Nonexistent file returns error gracefully |
+
+---
+
+## [0.4.14] - 2026-02-12
+
+### Summary
+
+First integration tests for `photon-core`. 10 `#[tokio::test]` functions exercise `ImageProcessor::process()` end-to-end against real fixture images, covering the full pipeline (decode → EXIF → hash → thumbnail), option toggling, error paths, output serialization roundtrips, and hash determinism. All tests run without ML models installed. 133 tests passing (+10 integration tests), zero clippy warnings.
+
+### Added
+
+- **`crates/photon-core/tests/integration.rs`** — 10 end-to-end integration tests using shared fixtures at `tests/fixtures/images/`
+
+### Tests
+
+133 tests passing (+10 from 123), zero clippy warnings, zero formatting violations.
+
+| New test | Validates |
+|----------|-----------|
+| `full_pipeline_without_models` | Decode, EXIF, hash, thumbnail populate correctly; embedding/tags empty without models; description is None |
+| `full_pipeline_skips_thumbnail` | `ProcessOptions::skip_thumbnail` produces `None` thumbnail while other fields remain populated |
+| `full_pipeline_skips_perceptual_hash` | `ProcessOptions::skip_perceptual_hash` produces `None` while thumbnail still generates |
+| `process_multiple_formats` | All 4 fixtures (`test.png`, `beach.jpg`, `dog.jpg`, `car.jpg`) succeed with correct format strings |
+| `process_nonexistent_file` | Returns `PhotonError::Pipeline(PipelineError::FileNotFound)` with correct path |
+| `process_rejects_oversized_dimensions` | Returns `PipelineError::ImageTooLarge` when `max_image_dimension = 1` |
+| `discover_finds_fixtures` | `discover()` returns all 4 test images from fixtures directory |
+| `output_roundtrip_json` | Process → serialize → deserialize → all fields match |
+| `output_roundtrip_jsonl` | Process 2 images → JSONL → parse each line → content hashes match |
+| `deterministic_content_hash` | Process same file twice → both content_hash and perceptual_hash identical |
 
 ---
 

@@ -1,6 +1,7 @@
 //! The `photon models` command for managing AI models.
 
 use clap::{Args, Subcommand};
+use photon_core::pipeline::Hasher;
 use photon_core::Config;
 use std::path::Path;
 
@@ -30,6 +31,7 @@ struct ModelVariant {
     label: &'static str,
     repo: &'static str,
     remote_path: &'static str,
+    blake3: &'static str,
 }
 
 const VISION_VARIANTS: &[ModelVariant] = &[
@@ -38,12 +40,14 @@ const VISION_VARIANTS: &[ModelVariant] = &[
         label: "Base (224)",
         repo: "Xenova/siglip-base-patch16-224",
         remote_path: "onnx/vision_model.onnx",
+        blake3: "05cd313b67db70acd8e800cd4c16105c3ebc4c385fe6002108d24ea806a248be",
     },
     ModelVariant {
         name: "siglip-base-patch16-384",
         label: "Base (384)",
         repo: "Xenova/siglip-base-patch16-384",
         remote_path: "onnx/vision_model.onnx",
+        blake3: "9a4dcfd0c21b8e4d143652d1e566da52222605b564979723383f6012b53dd0df",
     },
 ];
 
@@ -51,6 +55,11 @@ const VISION_VARIANTS: &[ModelVariant] = &[
 const TEXT_ENCODER_REPO: &str = "Xenova/siglip-base-patch16-224";
 const TEXT_ENCODER_REMOTE: &str = "onnx/text_model.onnx";
 const TOKENIZER_REMOTE: &str = "tokenizer.json";
+
+/// Expected BLAKE3 checksums for shared model files.
+const TEXT_ENCODER_BLAKE3: &str =
+    "fe62b4096a9e5c3ce735b771472c9e3faac6ddeceebab5794a0a5ce17ee171dd";
+const TOKENIZER_BLAKE3: &str = "cf171f3552992f467891b9d59be5bde1256ffe1344c62030d4bf0f87df583906";
 
 /// Local filenames.
 const VISUAL_MODEL_LOCAL_NAME: &str = "visual.onnx";
@@ -108,7 +117,7 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
                 tracing::info!("  Source: {}", url);
                 tracing::info!("  Destination: {:?}", dest);
 
-                download_file(&client, &url, &dest).await?;
+                download_file(&client, &url, &dest, Some(variant.blake3)).await?;
 
                 let file_size = std::fs::metadata(&dest)?.len();
                 tracing::info!(
@@ -131,7 +140,7 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
                 tracing::info!("Downloading text encoder (fp32)...");
                 tracing::info!("  Source: {}", url);
                 tracing::info!("  Destination: {:?}", text_dest);
-                download_file(&client, &url, &text_dest).await?;
+                download_file(&client, &url, &text_dest, Some(TEXT_ENCODER_BLAKE3)).await?;
                 let file_size = std::fs::metadata(&text_dest)?.len();
                 tracing::info!(
                     "  Text encoder complete ({:.1} MB)",
@@ -151,7 +160,7 @@ pub async fn execute(args: ModelsArgs) -> anyhow::Result<()> {
                 tracing::info!("Downloading tokenizer...");
                 tracing::info!("  Source: {}", url);
                 tracing::info!("  Destination: {:?}", tok_dest);
-                download_file(&client, &url, &tok_dest).await?;
+                download_file(&client, &url, &tok_dest, Some(TOKENIZER_BLAKE3)).await?;
                 tracing::info!("  Tokenizer complete");
             }
 
@@ -268,7 +277,15 @@ fn install_vocabulary(config: &Config) -> anyhow::Result<()> {
 }
 
 /// Download a file from a URL to a local path, streaming to disk.
-async fn download_file(client: &reqwest::Client, url: &str, dest: &Path) -> anyhow::Result<()> {
+///
+/// If `expected_blake3` is provided, the file is verified after download.
+/// On checksum mismatch the corrupt file is removed and an error is returned.
+async fn download_file(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+    expected_blake3: Option<&str>,
+) -> anyhow::Result<()> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
@@ -304,5 +321,87 @@ async fn download_file(client: &reqwest::Client, url: &str, dest: &Path) -> anyh
     }
 
     file.flush().await?;
+
+    // Verify checksum if expected hash is provided
+    if let Some(expected) = expected_blake3 {
+        verify_blake3(dest, expected)?;
+    }
+
     Ok(())
+}
+
+/// Verify a downloaded file's BLAKE3 checksum.
+///
+/// On mismatch, removes the corrupt file so the next run re-downloads.
+fn verify_blake3(path: &Path, expected: &str) -> anyhow::Result<()> {
+    let actual = Hasher::content_hash(path)
+        .map_err(|e| anyhow::anyhow!("Checksum computation failed for {}: {e}", path.display()))?;
+
+    if actual != expected {
+        let _ = std::fs::remove_file(path);
+        anyhow::bail!(
+            "Checksum mismatch for {}:\n  expected: {}\n  actual:   {}\n\
+             Corrupt file removed — try downloading again.",
+            path.display(),
+            expected,
+            actual
+        );
+    }
+
+    tracing::debug!("  Checksum verified: {}…", &actual[..16]);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_file(name: &str, content: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("photon_test_{name}"));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn verify_blake3_correct_hash() {
+        let path = test_file("verify_ok", b"hello photon");
+        let expected = Hasher::content_hash(&path).unwrap();
+
+        assert!(verify_blake3(&path, &expected).is_ok());
+        assert!(
+            path.exists(),
+            "file should still exist after successful verify"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn verify_blake3_wrong_hash_removes_file() {
+        let path = test_file("verify_bad", b"hello photon");
+        let wrong_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        let result = verify_blake3(&path, wrong_hash);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Checksum mismatch"),
+            "error should mention mismatch: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("Corrupt file removed"),
+            "error should mention removal: {err_msg}"
+        );
+        assert!(!path.exists(), "corrupt file should be deleted");
+    }
+
+    #[test]
+    fn verify_blake3_missing_file() {
+        let result = verify_blake3(
+            Path::new("/nonexistent/file.onnx"),
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
+        assert!(result.is_err());
+    }
 }

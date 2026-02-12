@@ -302,12 +302,8 @@ impl ImageProcessor {
     pub fn save_relevance(&self, config: &Config) -> Result<()> {
         if let (Some(scorer_lock), Some(tracker_lock)) = (&self.tag_scorer, &self.relevance_tracker)
         {
-            let scorer = scorer_lock
-                .read()
-                .expect("TagScorer lock poisoned");
-            let tracker = tracker_lock
-                .read()
-                .expect("RelevanceTracker lock poisoned");
+            let scorer = scorer_lock.read().expect("TagScorer lock poisoned");
+            let tracker = tracker_lock.read().expect("RelevanceTracker lock poisoned");
             let taxonomy_dir = config.taxonomy_dir();
             std::fs::create_dir_all(&taxonomy_dir).map_err(|e| PipelineError::Model {
                 message: format!("Failed to create taxonomy dir {:?}: {}", taxonomy_dir, e),
