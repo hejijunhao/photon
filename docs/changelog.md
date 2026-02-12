@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.4.17](#0417---2026-02-12)** — process.rs decomposition: `execute()` reduced from ~475 to 16 lines, 5 enrichment duplicates consolidated into 2 helpers
 - **[0.4.16](#0416---2026-02-12)** — Streaming batch output: JSONL file writes stream per-image instead of collecting all results in memory
 - **[0.4.15](#0415---2026-02-12)** — Model download checksum verification: BLAKE3 integrity checks for all 4 model files, auto-removal of corrupt downloads
 - **[0.4.14](#0414---2026-02-12)** — Integration tests: 10 end-to-end tests exercising `ImageProcessor::process()` against real fixtures
@@ -29,6 +30,40 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.4.17] - 2026-02-12
+
+### Summary
+
+process.rs decomposition. The monolithic `execute()` function (previously ~475 lines managing a 2x2x2 matrix of single/batch x LLM/no-LLM x file/stdout) reduced to 16 lines of pure orchestration. Five near-identical enrichment blocks consolidated into two reusable helpers. Pure refactor — zero behavior changes, output byte-identical for all flag combinations. 136 tests passing, zero clippy warnings.
+
+### Added
+
+- **`ProcessContext` struct** — bundles processor, options, enricher, config, output format, and LLM flag into a single context passed between functions
+- **`setup_processor()`** — extracted ~110 lines of input validation, config loading, quality preset, model loading, options construction, and enricher creation
+- **`process_single()`** — extracted ~50 lines handling single-file processing with LLM/no-LLM and file/stdout branching
+- **`process_batch()`** — extracted ~210 lines handling batch processing: skip-existing, progress bar, streaming loop, post-loop output, and summary
+- **`run_enrichment_collect()`** — consolidated 3 duplicated spawn+channel enrichment blocks into one function that returns `Vec<OutputRecord>` (used for file-targeted enrichment)
+- **`run_enrichment_stdout()`** — consolidated 2 duplicated inline-callback enrichment blocks into one function with `pretty: bool` parameter (used for stdout streaming)
+
+### Changed
+
+- **`execute()`** — replaced ~475-line body with 16-line orchestration: `setup_processor()` → `discover()` → `process_single()` or `process_batch()`
+- **Module-level imports** — `photon_core` imports previously scoped inside `execute()` moved to module level since they're now shared across multiple functions
+
+### Metrics
+
+| Metric | Before | After |
+|--------|--------|-------|
+| `execute()` length | ~475 lines | 16 lines |
+| Enrichment code copies | 5 | 2 |
+| Total file length | 722 lines | 726 lines |
+
+### Tests
+
+136 tests passing (unchanged), zero clippy warnings, zero formatting violations.
 
 ---
 
