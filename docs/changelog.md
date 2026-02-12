@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.5.2](#052---2026-02-12)** — Code assessment fixes: progressive encoding cache bug, text encoder unwrap, `cli/process.rs` → 5-file module, `config.rs` → 3-file module (8/10 → 9/10)
 - **[0.5.1](#051---2026-02-12)** — Interactive CLI hardening: 28 unit tests, `unsafe set_var` elimination, `toml_edit` comment-preserving config, output path validation, recursive async → loop
 - **[0.5.0](#050---2026-02-12)** — Interactive CLI: guided mode via bare `photon` invocation — 8-step process wizard, model management, LLM setup, config viewer, custom theme
 - **[0.4.17](#0417---2026-02-12)** — process.rs decomposition: `execute()` reduced from ~475 to 16 lines, 5 enrichment duplicates consolidated into 2 helpers
@@ -32,6 +33,38 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.5.2] - 2026-02-12
+
+### Summary
+
+Code assessment fixes raising quality from 8/10 to ~9/10. Fixed two bugs (one HIGH, one LOW) and split two oversized files into module directories. Zero known bugs remaining, zero files over 500 production lines, zero unsafe unwraps on fallible paths. 164 tests, zero clippy warnings, zero formatting violations.
+
+### Fixed
+
+- **Progressive encoding cache corruption** (`tagging/progressive.rs`) — when a chunk encoding failed mid-batch, `background_encode()` skipped the chunk via `continue` but still saved the incomplete label bank with the full vocabulary hash, creating a sticky broken state requiring manual deletion of `~/.photon/taxonomy/label_bank.*`. Added `all_chunks_succeeded` tracking; cache save now skipped on partial failure, allowing self-healing re-encode on next startup.
+- **Text encoder panic on empty result** (`tagging/text_encoder.rs`) — `.unwrap()` on `batch.into_iter().next()` replaced with `.ok_or_else(|| PipelineError::Model { ... })` to propagate a typed error instead of panicking if ONNX returned an empty tensor.
+
+### Changed
+
+- **`cli/process.rs` → `cli/process/` module** (843 → 5 files) — pure structural refactoring, zero logic changes. `mod.rs` (259), `types.rs` (55), `setup.rs` (176), `batch.rs` (309), `enrichment.rs` (77). All external imports unchanged via `pub use` re-exports.
+- **`config.rs` → `config/` module** (667 → 3 files) — pure structural refactoring, zero logic changes. `mod.rs` (166), `types.rs` (418), `validate.rs` (104). All `crate::config::*` and `photon_core::config::*` imports unchanged via `pub use types::*`.
+
+### Metrics
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Known bugs | 2 (1 HIGH, 1 LOW) | **0** |
+| Files >500 production lines | 2 | **0** |
+| Unsafe unwraps on fallible paths | 1 | **0** |
+| Tests | 164 | **164** |
+| Assessed quality | 8/10 | **~9/10** |
+
+### Tests
+
+164 tests passing (31 CLI + 123 core + 10 integration), zero clippy warnings, zero formatting violations.
 
 ---
 

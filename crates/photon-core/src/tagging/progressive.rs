@@ -107,6 +107,8 @@ impl ProgressiveEncoder {
             scorer.label_bank().clone()
         };
 
+        let mut all_chunks_succeeded = true;
+
         for chunk in remaining_indices.chunks(ctx.chunk_size) {
             // Encode ONLY this chunk's terms in a blocking task
             let chunk_indices: Vec<usize> = chunk.to_vec();
@@ -122,10 +124,12 @@ impl ProgressiveEncoder {
                 Ok(Ok(bank)) => bank,
                 Ok(Err(e)) => {
                     tracing::error!("Background encoding chunk failed: {e}");
-                    continue; // Skip this chunk, try next
+                    all_chunks_succeeded = false;
+                    continue;
                 }
                 Err(e) => {
                     tracing::error!("Background encoding task panicked: {e}");
+                    all_chunks_succeeded = false;
                     continue;
                 }
             };
@@ -154,22 +158,31 @@ impl ProgressiveEncoder {
             );
         }
 
-        // All terms encoded — save complete cache to disk.
-        // First ensure the parent directory exists.
-        if let Some(parent) = ctx.cache_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::error!("Failed to create taxonomy dir {:?}: {e}", parent);
-                return;
+        if all_chunks_succeeded {
+            // All terms encoded — save complete cache to disk.
+            // First ensure the parent directory exists.
+            if let Some(parent) = ctx.cache_path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    tracing::error!("Failed to create taxonomy dir {:?}: {e}", parent);
+                    return;
+                }
             }
-        }
 
-        if let Err(e) = running_bank.save(&ctx.cache_path, &ctx.vocab_hash) {
-            tracing::error!("Failed to save complete label bank cache: {e}");
+            if let Err(e) = running_bank.save(&ctx.cache_path, &ctx.vocab_hash) {
+                tracing::error!("Failed to save complete label bank cache: {e}");
+            } else {
+                tracing::info!(
+                    "Progressive encoding complete. Full vocabulary ({} terms) cached to {:?}",
+                    total_terms,
+                    ctx.cache_path,
+                );
+            }
         } else {
-            tracing::info!(
-                "Progressive encoding complete. Full vocabulary ({} terms) cached to {:?}",
+            tracing::warn!(
+                "Progressive encoding had failures — skipping cache save to avoid corruption. \
+                 {} of {} terms encoded this session.",
+                encoded_indices.len(),
                 total_terms,
-                ctx.cache_path,
             );
         }
     }
