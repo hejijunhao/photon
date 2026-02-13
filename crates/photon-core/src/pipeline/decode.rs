@@ -33,31 +33,26 @@ impl ImageDecoder {
         Self { limits }
     }
 
-    /// Decode an image from a file path with validation and timeout.
+    /// Decode an image from an in-memory byte buffer with validation and timeout.
     ///
-    /// Note: file-size validation is handled by `Validator::validate()` which runs
-    /// before decode in the pipeline. We still read file_size for the output metadata.
-    pub async fn decode(&self, path: &Path) -> Result<DecodedImage, PipelineError> {
-        let file_size =
-            std::fs::metadata(path)
-                .map(|m| m.len())
-                .map_err(|e| PipelineError::Decode {
-                    path: path.to_path_buf(),
-                    message: format!("Cannot read file: {}", e),
-                })?;
-
-        // Decode with timeout using spawn_blocking to avoid blocking async runtime
+    /// Used when the file has already been read (e.g., for combined hash+decode
+    /// to avoid reading the file twice).
+    pub async fn decode_from_bytes(
+        &self,
+        bytes: Vec<u8>,
+        path: &Path,
+    ) -> Result<DecodedImage, PipelineError> {
+        let file_size = bytes.len() as u64;
         let path_owned = path.to_path_buf();
         let timeout_duration = Duration::from_millis(self.limits.decode_timeout_ms);
 
         let decode_result = timeout(timeout_duration, async {
-            tokio::task::spawn_blocking(move || Self::decode_sync(&path_owned)).await
+            tokio::task::spawn_blocking(move || Self::decode_bytes_sync(bytes, &path_owned)).await
         })
         .await;
 
         match decode_result {
             Ok(Ok(Ok(mut decoded))) => {
-                // Validate dimensions
                 if decoded.width > self.limits.max_image_dimension
                     || decoded.height > self.limits.max_image_dimension
                 {
@@ -68,7 +63,6 @@ impl ImageDecoder {
                         max_dim: self.limits.max_image_dimension,
                     });
                 }
-                // Set file size from metadata (more accurate)
                 decoded.file_size = file_size;
                 Ok(decoded)
             }
@@ -85,14 +79,13 @@ impl ImageDecoder {
         }
     }
 
-    /// Synchronous decode implementation (runs in spawn_blocking).
-    fn decode_sync(path: &Path) -> Result<DecodedImage, PipelineError> {
-        // Detect format from file content (magic bytes), falling back to extension
-        let reader = image::ImageReader::open(path).map_err(|e| PipelineError::Decode {
-            path: path.to_path_buf(),
-            message: e.to_string(),
-        })?;
-        let reader = reader
+    /// Synchronous decode from bytes (runs in spawn_blocking).
+    fn decode_bytes_sync(bytes: Vec<u8>, path: &Path) -> Result<DecodedImage, PipelineError> {
+        use std::io::Cursor;
+
+        let file_size = bytes.len() as u64;
+        let cursor = Cursor::new(bytes);
+        let reader = image::ImageReader::new(cursor)
             .with_guessed_format()
             .map_err(|e| PipelineError::Decode {
                 path: path.to_path_buf(),
@@ -115,10 +108,6 @@ impl ImageDecoder {
         })?;
 
         let (width, height) = image.dimensions();
-        // Note: file_size is overwritten by the caller (decode()) with the value
-        // from metadata() at line 72. unwrap_or(0) is a benign placeholder here.
-        let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-
         Ok(DecodedImage {
             image,
             format,
@@ -165,7 +154,8 @@ mod tests {
         let misnamed = dir.path().join("test_misnamed.jpg");
         std::fs::copy(&fixture, &misnamed).unwrap();
 
-        let result = ImageDecoder::decode_sync(&misnamed).unwrap();
+        let bytes = std::fs::read(&misnamed).unwrap();
+        let result = ImageDecoder::decode_bytes_sync(bytes, &misnamed).unwrap();
         assert_eq!(result.format, ImageFormat::Png);
     }
 }

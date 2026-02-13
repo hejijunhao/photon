@@ -33,12 +33,17 @@ pub fn preprocess(image: &DynamicImage, image_size: u32) -> Array4<f32> {
     let size = image_size as usize;
     let mut tensor = Array4::<f32>::zeros((1, CHANNELS, size, size));
 
-    for y in 0..size {
-        for x in 0..size {
-            let pixel = rgb.get_pixel(x as u32, y as u32);
-            for c in 0..CHANNELS {
-                tensor[[0, c, y, x]] = (pixel[c] as f32 / 255.0 - NORM_MEAN) / NORM_STD;
-            }
+    // Access raw RGB bytes and tensor slice directly to avoid per-pixel
+    // bounds-checking overhead from get_pixel() and 4D ndarray indexing.
+    let raw = rgb.as_raw();
+    let tensor_data = tensor.as_slice_mut().unwrap();
+    for (i, pixel) in raw.chunks_exact(3).enumerate() {
+        let y = i / size;
+        let x = i % size;
+        for (c, &val) in pixel.iter().enumerate() {
+            // NCHW layout: offset = c * size * size + y * size + x
+            let idx = c * size * size + y * size + x;
+            tensor_data[idx] = (val as f32 / 255.0 - NORM_MEAN) / NORM_STD;
         }
     }
 

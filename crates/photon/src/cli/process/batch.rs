@@ -132,7 +132,7 @@ pub async fn process_batch(
         // JSONL file: core records already written in the loop
 
         if let Some(enricher) = ctx.enricher.take() {
-            let patches = run_enrichment_collect(enricher, results).await?;
+            let (patches, _) = run_enrichment_collect(enricher, results).await?;
             if let Some(writer) = &mut file_writer {
                 for record in &patches {
                     writer.write(record)?;
@@ -169,27 +169,28 @@ pub async fn process_batch(
             let mut writer = OutputWriter::new(BufWriter::new(file), ctx.output_format, false);
 
             if ctx.llm_enabled {
-                // ── Phase 2: LLM enrichment to file (only if --llm) ──
+                // ── LLM enrichment to file ──
+                // Run enrichment first, then consume results by move (zero clones).
                 let mut all_records: Vec<OutputRecord> = existing_records;
-                all_records.extend(
-                    results
-                        .iter()
-                        .map(|r| OutputRecord::Core(Box::new(r.clone()))),
-                );
 
                 if let Some(enricher) = ctx.enricher.take() {
-                    let patches = run_enrichment_collect(enricher, results.clone()).await?;
+                    let (patches, returned_results) =
+                        run_enrichment_collect(enricher, results).await?;
+                    all_records.extend(
+                        returned_results
+                            .into_iter()
+                            .map(|r| OutputRecord::Core(Box::new(r))),
+                    );
                     all_records.extend(patches);
+                } else {
+                    all_records
+                        .extend(results.into_iter().map(|r| OutputRecord::Core(Box::new(r))));
                 }
 
                 writer.write_all(&all_records)?;
             } else if !existing_records.is_empty() {
                 let mut all_records = existing_records;
-                all_records.extend(
-                    results
-                        .iter()
-                        .map(|r| OutputRecord::Core(Box::new(r.clone()))),
-                );
+                all_records.extend(results.into_iter().map(|r| OutputRecord::Core(Box::new(r))));
                 writer.write_all(&all_records)?;
             } else {
                 writer.write_all(&results)?;
@@ -202,26 +203,34 @@ pub async fn process_batch(
             && matches!(args.format, OutputFormat::Json)
         {
             if ctx.llm_enabled {
-                // JSON array to stdout — combine core + enrichment in single array
-                let mut all_records: Vec<OutputRecord> = results
-                    .iter()
-                    .map(|r| OutputRecord::Core(Box::new(r.clone())))
-                    .collect();
-
+                // JSON array to stdout — combine core + enrichment in single array.
+                // Run enrichment first, then consume results by move (zero clones).
                 if let Some(enricher) = ctx.enricher.take() {
-                    let patches = run_enrichment_collect(enricher, results.clone()).await?;
+                    let (patches, returned_results) =
+                        run_enrichment_collect(enricher, results).await?;
+                    let mut all_records: Vec<OutputRecord> = returned_results
+                        .into_iter()
+                        .map(|r| OutputRecord::Core(Box::new(r)))
+                        .collect();
                     all_records.extend(patches);
+                    println!("{}", serde_json::to_string_pretty(&all_records)?);
+                } else {
+                    let all_records: Vec<OutputRecord> = results
+                        .into_iter()
+                        .map(|r| OutputRecord::Core(Box::new(r)))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&all_records)?);
                 }
-
-                println!("{}", serde_json::to_string_pretty(&all_records)?);
             } else {
                 // JSON array to stdout (non-LLM batch)
                 println!("{}", serde_json::to_string_pretty(&results)?);
             }
-        }
-
-        // LLM enrichment for JSONL stdout streaming (JSON handled in combined array above)
-        if matches!(args.format, OutputFormat::Jsonl) && ctx.llm_enabled && args.output.is_none() {
+        } else if matches!(args.format, OutputFormat::Jsonl)
+            && ctx.llm_enabled
+            && args.output.is_none()
+        {
+            // LLM enrichment for JSONL stdout streaming
+            // (JSON handled in combined array above; file output handled in stream_to_file)
             if let Some(enricher) = ctx.enricher.take() {
                 run_enrichment_stdout(enricher, &results, false).await?;
             }

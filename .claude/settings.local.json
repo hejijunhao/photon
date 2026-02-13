@@ -39,7 +39,13 @@
       "Bash(cargo install:*)",
       "WebFetch(domain:docs.rs)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(sort:*)"
+      "Bash(sort:*)",
+      "Bash(for f in crates/photon-core/src/llm/*.rs crates/photon-core/src/embedding/*.rs)",
+      "Bash(do wc -l \"$f\")",
+      "Bash(for:*)",
+      "Bash(do if ! grep -q \"#\\\\[test\\\\]\" \"$f\")",
+      "Bash(then basename \"$f\" fi done)",
+      "Bash(git log:*)"
     ]
   }
 }

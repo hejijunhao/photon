@@ -42,6 +42,7 @@ pub struct ImageProcessor {
     thumbnail_gen: ThumbnailGenerator,
     validator: Validator,
     discovery: FileDiscovery,
+    hasher: Hasher,
     embedding_engine: Option<Arc<EmbeddingEngine>>,
     tag_scorer: Option<Arc<RwLock<TagScorer>>>,
     relevance_tracker: Option<RwLock<RelevanceTracker>>,
@@ -60,6 +61,7 @@ impl ImageProcessor {
             thumbnail_gen: ThumbnailGenerator::new(config.thumbnail.clone()),
             validator: Validator::new(config.limits.clone()),
             discovery: FileDiscovery::new(config.processing.clone()),
+            hasher: Hasher::new(),
             embedding_engine: None,
             tag_scorer: None,
             relevance_tracker: None,
@@ -344,33 +346,39 @@ impl ImageProcessor {
         let validate_time = start.elapsed();
         tracing::trace!("  Validate: {:?}", validate_time);
 
-        // Decode
+        // Read file once — used for both hashing and decoding
+        let read_start = std::time::Instant::now();
+        let bytes = std::fs::read(path).map_err(|e| PipelineError::Decode {
+            path: path.to_path_buf(),
+            message: format!("Cannot read file: {}", e),
+        })?;
+        let read_time = read_start.elapsed();
+        tracing::trace!("  File read: {:?} ({} bytes)", read_time, bytes.len());
+
+        // Generate content hash from bytes (no second file read)
+        let hash_start = std::time::Instant::now();
+        let content_hash = Hasher::content_hash_from_bytes(&bytes);
+        let hash_time = hash_start.elapsed();
+        tracing::trace!("  Content hash: {:?}", hash_time);
+
+        // Decode from bytes (no second file read)
         let decode_start = std::time::Instant::now();
-        let decoded = self.decoder.decode(path).await?;
+        let decoded = self.decoder.decode_from_bytes(bytes, path).await?;
         let decode_time = decode_start.elapsed();
         tracing::trace!("  Decode: {:?}", decode_time);
 
-        // Extract metadata (non-blocking, sync operation)
+        // Extract metadata (non-blocking, sync operation — reads EXIF tags from file)
         let metadata_start = std::time::Instant::now();
         let exif = MetadataExtractor::extract(path);
         let metadata_time = metadata_start.elapsed();
         tracing::trace!("  Metadata: {:?}", metadata_time);
-
-        // Generate content hash
-        let hash_start = std::time::Instant::now();
-        let content_hash = Hasher::content_hash(path).map_err(|e| PipelineError::Decode {
-            path: path.to_path_buf(),
-            message: format!("Hash error: {}", e),
-        })?;
-        let hash_time = hash_start.elapsed();
-        tracing::trace!("  Content hash: {:?}", hash_time);
 
         // Generate perceptual hash
         let phash_start = std::time::Instant::now();
         let perceptual_hash = if options.skip_perceptual_hash {
             None
         } else {
-            Some(Hasher::perceptual_hash(&decoded.image))
+            Some(self.hasher.perceptual_hash(&decoded.image))
         };
         let phash_time = phash_start.elapsed();
         tracing::trace!("  Perceptual hash: {:?}", phash_time);
@@ -386,19 +394,25 @@ impl ImageProcessor {
         tracing::trace!("  Thumbnail: {:?}", thumb_time);
 
         // Generate embedding (Phase 3)
+        // Preprocess here (outside spawn_blocking) to avoid cloning the full
+        // DynamicImage (~49MB for 4032x3024) into the blocking task. The
+        // preprocessed tensor is only ~600KB (224x224x3xf32).
         let embed_start = std::time::Instant::now();
         let embedding = if options.skip_embedding {
             vec![]
         } else if let Some(engine) = &self.embedding_engine {
+            let tensor =
+                crate::embedding::preprocess::preprocess(&decoded.image, engine.image_size());
             let engine = Arc::clone(engine);
-            let image_clone = decoded.image.clone();
             let timeout_duration = Duration::from_millis(self.embed_timeout_ms);
             let embed_path = path.to_path_buf();
             let embed_path_inner = embed_path.clone();
 
             let result = tokio::time::timeout(timeout_duration, async {
-                tokio::task::spawn_blocking(move || engine.embed(&image_clone, &embed_path_inner))
-                    .await
+                tokio::task::spawn_blocking(move || {
+                    engine.embed_preprocessed(&tensor, &embed_path_inner)
+                })
+                .await
             })
             .await;
 

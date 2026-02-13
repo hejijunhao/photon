@@ -164,7 +164,7 @@ async fn process_single(mut ctx: ProcessContext, args: &ProcessArgs) -> anyhow::
 
             let mut all_records: Vec<OutputRecord> = vec![core_record];
             if let Some(enricher) = ctx.enricher.take() {
-                let patches = run_enrichment_collect(enricher, vec![result]).await?;
+                let (patches, _) = run_enrichment_collect(enricher, vec![result]).await?;
                 all_records.extend(patches);
             }
             writer.write_all(&all_records)?;
@@ -177,7 +177,7 @@ async fn process_single(mut ctx: ProcessContext, args: &ProcessArgs) -> anyhow::
                     // JSON: collect enrichment, emit combined array
                     let mut all_records: Vec<OutputRecord> = vec![core_record];
                     if let Some(enricher) = ctx.enricher.take() {
-                        let patches = run_enrichment_collect(enricher, vec![result]).await?;
+                        let (patches, _) = run_enrichment_collect(enricher, vec![result]).await?;
                         all_records.extend(patches);
                     }
                     println!("{}", serde_json::to_string_pretty(&all_records)?);

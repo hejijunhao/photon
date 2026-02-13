@@ -63,12 +63,29 @@ impl EmbeddingEngine {
         })
     }
 
+    /// Get the image input size for this model (224 or 384).
+    pub fn image_size(&self) -> u32 {
+        self.image_size
+    }
+
     /// Generate an embedding vector for an image.
     ///
     /// Returns an L2-normalized Vec<f32> (typically 768 dimensions).
     pub fn embed(&self, image: &DynamicImage, path: &Path) -> Result<Vec<f32>, PipelineError> {
         let tensor = preprocess(image, self.image_size);
         self.session.embed(&tensor, path)
+    }
+
+    /// Generate an embedding from an already-preprocessed tensor.
+    ///
+    /// Use this when preprocessing has been done outside of `spawn_blocking`
+    /// to avoid cloning the full `DynamicImage` across thread boundaries.
+    pub fn embed_preprocessed(
+        &self,
+        tensor: &ndarray::Array4<f32>,
+        path: &Path,
+    ) -> Result<Vec<f32>, PipelineError> {
+        self.session.embed(tensor, path)
     }
 
     /// Check whether the model files exist on disk.

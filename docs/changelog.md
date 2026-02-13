@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.6.0](#060---2026-02-13)** — Speed Phase 1: read-once I/O, cached perceptual hasher, preprocess before `spawn_blocking` (~80x less data across thread boundary), raw buffer preprocessing, zero-clone batch output
 - **[0.5.8](#058---2026-02-13)** — MEDIUM-severity fixes: silent failure logging (WalkDir, skip-existing, progressive encoder), enricher file size guard, embedding error context, nested lock elimination, bounded enrichment channel (+4 tests)
 - **[0.5.7](#057---2026-02-13)** — HIGH-severity fixes: lock poisoning graceful degradation, embedding dimension validation, semaphore leak prevention, single-authority timeouts, error propagation over silent swallowing (+5 tests)
 - **[0.5.6](#056---2026-02-13)** — Assessment review fixes: documentation correction, strengthened assertions, +10 tests (enricher concurrency, boundary conditions, skip options)
@@ -39,6 +40,26 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.6.0] - 2026-02-13
+
+### Summary
+
+Speed Phase 1 — five independent optimizations that eliminate redundant work from every image processed. Each image is now read from disk once instead of twice, the perceptual hasher is constructed once per session instead of per image, only a ~600 KB preprocessed tensor crosses the `spawn_blocking` boundary instead of a ~49 MB decoded image, pixel preprocessing uses raw buffer iteration without bounds checking, and batch output handling performs zero `ProcessedImage` clones. Estimated ~1.5-2x throughput improvement. 214 tests, zero clippy warnings.
+
+### Changed
+
+- **Read file once** (`pipeline/processor.rs`, `pipeline/hash.rs`, `pipeline/decode.rs`) — pipeline now reads each file into a `Vec<u8>` once, computes BLAKE3 from the buffer, and decodes from a `Cursor<Vec<u8>>`. Removed old `decode()`/`decode_sync()` methods. Added `Hasher::content_hash_from_bytes()` and `ImageDecoder::decode_from_bytes()`. The streaming `content_hash(path)` is retained for `--skip-existing` where full file reads would be wasteful.
+- **Cached perceptual hasher** (`pipeline/hash.rs`, `pipeline/processor.rs`) — `Hasher` changed from a unit struct to hold a pre-built `image_hasher::Hasher` field. Constructed once in `ImageProcessor::new()`, reused via `&self.hasher` for every image.
+- **Preprocess before `spawn_blocking`** (`pipeline/processor.rs`, `embedding/mod.rs`) — preprocessing (resize to 224x224, normalize) now runs before the blocking boundary. Only the resulting `Array4<f32>` (~600 KB) moves into the closure instead of the full `DynamicImage` (~49 MB). Added `EmbeddingEngine::image_size()` and `embed_preprocessed()`.
+- **Raw buffer preprocessing** (`embedding/preprocess.rs`) — replaced per-pixel `get_pixel()` + 4D ndarray indexing (both bounds-checked) with raw slice access via `rgb.as_raw().chunks_exact(3)` and flat NCHW offset writes into `as_slice_mut()`. Eliminates all bounds checking on the inner loop.
+- **Zero-clone batch output** (`cli/process/batch.rs`, `cli/process/enrichment.rs`, `cli/process/mod.rs`) — `run_enrichment_collect()` now returns owned results via move instead of requiring callers to clone. All post-loop output branches use `.into_iter()` instead of `.iter().map(clone)`. Net result: 0 `ProcessedImage` clones in output handling (down from 2N).
+
+### Tests
+
+214 tests passing (38 CLI + 156 core + 20 integration), zero clippy warnings, zero formatting violations.
 
 ---
 

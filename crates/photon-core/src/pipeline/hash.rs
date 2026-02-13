@@ -7,10 +7,30 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
-/// Provides content and perceptual hashing for images.
-pub struct Hasher;
+/// Provides content hashing and perceptual hashing for images.
+///
+/// The perceptual hasher is pre-configured and cached to avoid
+/// re-allocating the same `HasherConfig` for every image.
+pub struct Hasher {
+    phash_hasher: image_hasher::Hasher,
+}
+
+impl Default for Hasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Hasher {
+    /// Create a new hasher with a pre-configured perceptual hash algorithm.
+    pub fn new() -> Self {
+        let phash_hasher = HasherConfig::new()
+            .hash_alg(HashAlg::DoubleGradient)
+            .hash_size(16, 16)
+            .to_hasher();
+        Self { phash_hasher }
+    }
+
     /// Generate a BLAKE3 hash of file contents for exact deduplication.
     ///
     /// Uses streaming to handle large files efficiently without loading
@@ -33,17 +53,23 @@ impl Hasher {
         Ok(hasher.finalize().to_hex().to_string())
     }
 
+    /// Generate a BLAKE3 hash from an in-memory byte buffer.
+    ///
+    /// Used when the file has already been read into memory (e.g., to avoid
+    /// reading the file twice for both hashing and decoding).
+    pub fn content_hash_from_bytes(data: &[u8]) -> String {
+        let mut hasher = Blake3Hasher::new();
+        hasher.update(data);
+        hasher.finalize().to_hex().to_string()
+    }
+
     /// Generate a perceptual hash for near-duplicate detection.
     ///
+    /// Uses the pre-configured hasher to avoid per-image allocation overhead.
     /// Similar images will have similar hashes, allowing detection of
     /// resized, cropped, or slightly modified versions.
-    pub fn perceptual_hash(image: &DynamicImage) -> String {
-        let hasher = HasherConfig::new()
-            .hash_alg(HashAlg::DoubleGradient)
-            .hash_size(16, 16)
-            .to_hasher();
-
-        let hash = hasher.hash_image(image);
+    pub fn perceptual_hash(&self, image: &DynamicImage) -> String {
+        let hash = self.phash_hasher.hash_image(image);
         hash.to_base64()
     }
 
@@ -66,16 +92,18 @@ mod tests {
     #[test]
     fn test_perceptual_hash_consistency() {
         // Same image should produce same hash
+        let hasher = Hasher::new();
         let img = DynamicImage::new_rgb8(100, 100);
-        let hash1 = Hasher::perceptual_hash(&img);
-        let hash2 = Hasher::perceptual_hash(&img);
+        let hash1 = hasher.perceptual_hash(&img);
+        let hash2 = hasher.perceptual_hash(&img);
         assert_eq!(hash1, hash2);
     }
 
     #[test]
     fn test_perceptual_distance_identical() {
+        let hasher = Hasher::new();
         let img = DynamicImage::new_rgb8(100, 100);
-        let hash = Hasher::perceptual_hash(&img);
+        let hash = hasher.perceptual_hash(&img);
         let distance = Hasher::perceptual_distance(&hash, &hash);
         assert_eq!(distance, Some(0));
     }

@@ -4,11 +4,13 @@ use photon_core::{EnrichResult, Enricher, OutputRecord, ProcessedImage};
 
 /// Run LLM enrichment via a spawned task, collecting patches via channel.
 ///
-/// Used for file-targeted enrichment where patches are written after collection.
+/// Returns both the enrichment patches and the original results (moved back
+/// from the spawned task), allowing callers to consume results by move
+/// instead of cloning.
 pub async fn run_enrichment_collect(
     enricher: Enricher,
     results: Vec<ProcessedImage>,
-) -> anyhow::Result<Vec<OutputRecord>> {
+) -> anyhow::Result<(Vec<OutputRecord>, Vec<ProcessedImage>)> {
     tracing::info!("Starting LLM enrichment for {} images...", results.len());
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<OutputRecord>(64);
@@ -16,7 +18,7 @@ pub async fn run_enrichment_collect(
     let enricher_handle = {
         let tx = tx;
         tokio::spawn(async move {
-            enricher
+            let stats = enricher
                 .enrich_batch(&results, move |enrich_result| match enrich_result {
                     EnrichResult::Success(patch) => {
                         let _ = tx.send(OutputRecord::Enrichment(patch));
@@ -25,14 +27,15 @@ pub async fn run_enrichment_collect(
                         tracing::error!("Enrichment failed: {path:?} - {msg}");
                     }
                 })
-                .await
+                .await;
+            (stats, results)
         })
     };
 
-    let (enriched, enrich_failed) = enricher_handle.await?;
+    let ((enriched, enrich_failed), results) = enricher_handle.await?;
     let records: Vec<OutputRecord> = rx.try_iter().collect();
     log_enrichment_stats(enriched, enrich_failed);
-    Ok(records)
+    Ok((records, results))
 }
 
 /// Run LLM enrichment, printing patches to stdout as they arrive.
