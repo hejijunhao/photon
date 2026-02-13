@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.6.1](#061---2026-02-13)** — Speed Phase 2: concurrent batch processing via `buffer_unordered(parallel)`, skip-existing pre-filtering, `--parallel` now controls pipeline concurrency (expected 4-8x throughput)
 - **[0.6.0](#060---2026-02-13)** — Speed Phase 1: read-once I/O, cached perceptual hasher, preprocess before `spawn_blocking` (~80x less data across thread boundary), raw buffer preprocessing, zero-clone batch output
 - **[0.5.8](#058---2026-02-13)** — MEDIUM-severity fixes: silent failure logging (WalkDir, skip-existing, progressive encoder), enricher file size guard, embedding error context, nested lock elimination, bounded enrichment channel (+4 tests)
 - **[0.5.7](#057---2026-02-13)** — HIGH-severity fixes: lock poisoning graceful degradation, embedding dimension validation, semaphore leak prevention, single-authority timeouts, error propagation over silent swallowing (+5 tests)
@@ -40,6 +41,24 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.6.1] - 2026-02-13
+
+### Summary
+
+Speed Phase 2 — batch processing converted from sequential to concurrent. Images are now processed in parallel using `futures_util::StreamExt::buffer_unordered(parallel)`, bounded by `--parallel` (default 4). While one image waits on the ONNX mutex for embedding, others decode, hash, and generate thumbnails on tokio's blocking thread pool. Skip-existing files are pre-filtered before the concurrent pipeline to avoid wasting concurrency slots. Expected **4-8x throughput** on multi-core machines. Single file changed, no new dependencies. 214 tests, zero clippy warnings.
+
+### Changed
+
+- **Concurrent batch pipeline** (`cli/process/batch.rs`) — replaced sequential `for file in &files { process().await }` loop with `stream::iter(files).map(async process).buffer_unordered(parallel)`. `ProcessContext` destructured to wrap `ImageProcessor` and `ProcessOptions` in `Arc` for concurrent sharing. Results consumed single-threaded — stdout/file writes and counters need no synchronization.
+- **Skip-existing pre-filtering** (`cli/process/batch.rs`) — hash checks now run before the concurrent stream. Previously, skipped files entered the loop, computed their hash, and `continue`d — wasting a concurrency slot. Now only files that need processing enter the pipeline.
+- **`--parallel` controls pipeline concurrency** (`cli/process/batch.rs`) — `args.parallel` (default 4, clamped to `min 1`) now sets the `buffer_unordered` limit for image processing. Previously it only controlled LLM enrichment concurrency (that behavior is unchanged in `setup.rs`).
+
+### Tests
+
+214 tests passing (38 CLI + 156 core + 20 integration), zero clippy warnings, zero formatting violations.
 
 ---
 

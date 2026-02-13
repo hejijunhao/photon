@@ -4,7 +4,9 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use futures_util::stream::{self, StreamExt};
 use photon_core::{DiscoveredFile, OutputRecord, OutputWriter, ProcessedImage};
 
 use super::enrichment::{run_enrichment_collect, run_enrichment_stdout};
@@ -12,11 +14,28 @@ use super::types::OutputFormat;
 use super::{ProcessArgs, ProcessContext};
 
 /// Process a directory of images with progress tracking and optional LLM enrichment.
+///
+/// Images are processed concurrently using `buffer_unordered(parallel)`. While one
+/// image waits on the ONNX mutex for embedding, others decode/hash/thumbnail on
+/// tokio's blocking thread pool. Results are consumed single-threaded for output.
 pub async fn process_batch(
-    mut ctx: ProcessContext,
+    ctx: ProcessContext,
     args: &ProcessArgs,
     files: Vec<DiscoveredFile>,
 ) -> anyhow::Result<()> {
+    // Destructure context: processor and options go into Arc for concurrent sharing,
+    // the rest is used only in the single-threaded result-handling loop and post-loop code.
+    let ProcessContext {
+        processor,
+        options,
+        mut enricher,
+        output_format,
+        llm_enabled,
+        config,
+    } = ctx;
+    let processor = Arc::new(processor);
+    let options = Arc::new(options);
+
     // Load existing hashes for --skip-existing
     let existing_hashes = if args.skip_existing {
         load_existing_hashes(&args.output)?
@@ -36,13 +55,11 @@ pub async fn process_batch(
 
     let mut succeeded: u64 = 0;
     let mut failed: u64 = 0;
-    let mut skipped: u64 = 0;
     let mut total_bytes: u64 = 0;
     let start_time = std::time::Instant::now();
     // Collected results: needed for JSON array output (format requires all items)
     // and for LLM enrichment (enricher needs image metadata). For JSONL-only
-    // without LLM, results are streamed directly (lines 84-91, 94-100) and
-    // this Vec stays empty.
+    // without LLM, results are streamed directly and this Vec stays empty.
     let mut results = Vec::new();
 
     // Stream JSONL directly to file (avoids collecting all results in memory)
@@ -56,58 +73,81 @@ pub async fn process_batch(
         };
         Some(OutputWriter::new(
             BufWriter::new(file),
-            ctx.output_format,
+            output_format,
             false,
         ))
     } else {
         None
     };
 
-    for file in &files {
-        // Skip already-processed files
-        if !existing_hashes.is_empty() {
+    // Pre-filter skip-existing files before the concurrent pipeline
+    // so skipped files don't occupy a concurrency slot.
+    let (files_to_process, skipped) = if existing_hashes.is_empty() {
+        (files, 0u64)
+    } else {
+        let mut to_process = Vec::new();
+        let mut skip_count = 0u64;
+        for file in files {
             if let Ok(hash) = photon_core::Hasher::content_hash(&file.path) {
                 if existing_hashes.contains(&hash) {
-                    skipped += 1;
+                    skip_count += 1;
                     progress.inc(1);
                     continue;
                 }
             }
+            to_process.push(file);
         }
+        (to_process, skip_count)
+    };
 
-        match ctx
-            .processor
-            .process_with_options(&file.path, &ctx.options)
-            .await
-        {
-            Ok(result) => {
+    // ── Concurrent processing ──
+    // Process up to `parallel` images simultaneously. While one image
+    // waits on the ONNX mutex for embedding, others decode/hash/thumbnail
+    // on tokio's blocking thread pool.
+    let parallel = args.parallel.max(1);
+    let mut result_stream = stream::iter(files_to_process)
+        .map(|file| {
+            let proc = Arc::clone(&processor);
+            let opts = Arc::clone(&options);
+            async move {
+                let result = proc.process_with_options(&file.path, &opts).await;
+                (file, result)
+            }
+        })
+        .buffer_unordered(parallel);
+
+    // Consume results single-threaded: stdout/file writes and counters
+    // need no synchronization.
+    while let Some((file, result)) = result_stream.next().await {
+        match result {
+            Ok(image) => {
                 succeeded += 1;
-                total_bytes += result.file_size;
+                total_bytes += image.file_size;
 
                 // Stream to stdout immediately (JSONL only)
                 if matches!(args.format, OutputFormat::Jsonl) && args.output.is_none() {
-                    if ctx.llm_enabled {
-                        let record = OutputRecord::Core(Box::new(result.clone()));
+                    if llm_enabled {
+                        let record = OutputRecord::Core(Box::new(image.clone()));
                         println!("{}", serde_json::to_string(&record)?);
                     } else {
-                        println!("{}", serde_json::to_string(&result)?);
+                        println!("{}", serde_json::to_string(&image)?);
                     }
                 }
 
                 // Stream to file immediately (JSONL only)
                 if let Some(writer) = &mut file_writer {
-                    if ctx.llm_enabled {
-                        writer.write(&OutputRecord::Core(Box::new(result.clone())))?;
+                    if llm_enabled {
+                        writer.write(&OutputRecord::Core(Box::new(image.clone())))?;
                     } else {
-                        writer.write(&result)?;
+                        writer.write(&image)?;
                     }
                 }
 
                 // Collect only when needed:
                 // - LLM: enricher requires image data
                 // - JSON format: array wrapper requires all items
-                if ctx.llm_enabled || matches!(args.format, OutputFormat::Json) {
-                    results.push(result);
+                if llm_enabled || matches!(args.format, OutputFormat::Json) {
+                    results.push(image);
                 }
             }
             Err(e) => {
@@ -131,7 +171,7 @@ pub async fn process_batch(
     if stream_to_file {
         // JSONL file: core records already written in the loop
 
-        if let Some(enricher) = ctx.enricher.take() {
+        if let Some(enricher) = enricher.take() {
             let (patches, _) = run_enrichment_collect(enricher, results).await?;
             if let Some(writer) = &mut file_writer {
                 for record in &patches {
@@ -166,14 +206,14 @@ pub async fn process_batch(
                 }
             }
             let file = File::create(output_path)?;
-            let mut writer = OutputWriter::new(BufWriter::new(file), ctx.output_format, false);
+            let mut writer = OutputWriter::new(BufWriter::new(file), output_format, false);
 
-            if ctx.llm_enabled {
+            if llm_enabled {
                 // ── LLM enrichment to file ──
                 // Run enrichment first, then consume results by move (zero clones).
                 let mut all_records: Vec<OutputRecord> = existing_records;
 
-                if let Some(enricher) = ctx.enricher.take() {
+                if let Some(enricher) = enricher.take() {
                     let (patches, returned_results) =
                         run_enrichment_collect(enricher, results).await?;
                     all_records.extend(
@@ -202,10 +242,10 @@ pub async fn process_batch(
             && args.output.is_none()
             && matches!(args.format, OutputFormat::Json)
         {
-            if ctx.llm_enabled {
+            if llm_enabled {
                 // JSON array to stdout — combine core + enrichment in single array.
                 // Run enrichment first, then consume results by move (zero clones).
-                if let Some(enricher) = ctx.enricher.take() {
+                if let Some(enricher) = enricher.take() {
                     let (patches, returned_results) =
                         run_enrichment_collect(enricher, results).await?;
                     let mut all_records: Vec<OutputRecord> = returned_results
@@ -225,20 +265,18 @@ pub async fn process_batch(
                 // JSON array to stdout (non-LLM batch)
                 println!("{}", serde_json::to_string_pretty(&results)?);
             }
-        } else if matches!(args.format, OutputFormat::Jsonl)
-            && ctx.llm_enabled
-            && args.output.is_none()
+        } else if matches!(args.format, OutputFormat::Jsonl) && llm_enabled && args.output.is_none()
         {
             // LLM enrichment for JSONL stdout streaming
             // (JSON handled in combined array above; file output handled in stream_to_file)
-            if let Some(enricher) = ctx.enricher.take() {
+            if let Some(enricher) = enricher.take() {
                 run_enrichment_stdout(enricher, &results, false).await?;
             }
         }
     }
 
     // Save relevance tracking data (if enabled)
-    if let Err(e) = ctx.processor.save_relevance(&ctx.config) {
+    if let Err(e) = processor.save_relevance(&config) {
         tracing::warn!("Failed to save relevance data: {e}");
     }
 
