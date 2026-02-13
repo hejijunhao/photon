@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.6.4](#064---2026-02-13)** — CI fix: TOML section scoping bug — 5 dependencies (`tokenizers`, `rand`, `async-trait`, `reqwest`, `futures-util`) accidentally scoped to macOS-only, breaking Linux builds
 - **[0.6.3](#063---2026-02-13)** — Speed Phase 4: cheap `--skip-existing` pre-filter (path+size matching, zero I/O), zero-copy label bank save/load (~209MB allocation eliminated), reduced peak memory in progressive encoding (move semantics over clone)
 - **[0.6.2](#062---2026-02-13)** — Speed Phase 3: ndarray vectorized scoring with BLAS/Accelerate on macOS, precomputed pool index lists (~30x fewer iterations on tagging hot path)
 - **[0.6.1](#061---2026-02-13)** — Speed Phase 2: concurrent batch processing via `buffer_unordered(parallel)`, skip-existing pre-filtering, `--parallel` now controls pipeline concurrency (expected 4-8x throughput)
@@ -43,6 +44,22 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.6.4] - 2026-02-13
+
+### Summary
+
+CI fix — TOML section scoping bug in `photon-core/Cargo.toml`. The `[target.'cfg(target_os = "macos")'.dependencies]` section header for BLAS/Accelerate was placed mid-file, causing all subsequent dependencies (`tokenizers`, `rand`, `async-trait`, `reqwest`, `futures-util`) to be scoped to macOS-only. This broke Linux CI with 52 compilation errors: unresolved crates, dyn-incompatible `LlmProvider` trait (missing `#[async_trait]`), and cascading type inference failures. Fix: moved the 5 platform-independent deps above the target-specific section. 1 file changed, no code changes.
+
+### Fixed
+
+- **TOML section scoping** (`photon-core/Cargo.toml`) — `tokenizers`, `rand`, `async-trait`, `reqwest`, and `futures-util` were listed after `[target.'cfg(target_os = "macos")'.dependencies]`, making them macOS-only. In TOML, all key-value pairs belong to the most recent section header until a new one appears. Reordered so all platform-independent deps sit under `[dependencies]` and the macOS-specific `ndarray`+`blas-src` section comes last.
+
+### Tests
+
+220 tests passing (40 CLI + 160 core + 20 integration), zero clippy warnings, zero formatting violations.
 
 ---
 
