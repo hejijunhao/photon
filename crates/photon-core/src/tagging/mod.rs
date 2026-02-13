@@ -13,5 +13,5 @@ pub(crate) mod seed;
 pub(crate) mod text_encoder;
 pub(crate) mod vocabulary;
 
-pub use scorer::TagScorer;
+pub use scorer::{ScoringResult, TagScorer};
 pub use vocabulary::Vocabulary;

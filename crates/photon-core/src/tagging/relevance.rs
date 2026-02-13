@@ -144,6 +144,13 @@ impl RelevanceTracker {
             .as_secs();
 
         for &(idx, confidence) in hits {
+            if idx >= self.stats.len() {
+                tracing::warn!(
+                    "record_hits: term index {idx} out of bounds (max {}), skipping",
+                    self.stats.len()
+                );
+                continue;
+            }
             let stat = &mut self.stats[idx];
             stat.hit_count += 1;
             stat.score_sum += confidence;
@@ -211,8 +218,13 @@ impl RelevanceTracker {
     }
 
     /// Get the pool assignment for a term.
+    ///
+    /// Returns `Pool::Cold` for out-of-bounds indices (safe default — unscored).
     pub fn pool(&self, term_index: usize) -> Pool {
-        self.stats[term_index].pool
+        self.stats
+            .get(term_index)
+            .map(|s| s.pool)
+            .unwrap_or(Pool::Cold)
     }
 
     /// Get pool counts for logging: (active, warm, cold).
@@ -232,9 +244,10 @@ impl RelevanceTracker {
 
     /// Promote terms to warm pool (for neighbor expansion).
     /// Only promotes Cold terms; Active/Warm terms are left unchanged.
+    /// Out-of-bounds indices are silently skipped.
     pub fn promote_to_warm(&mut self, indices: &[usize]) {
         for &idx in indices {
-            if self.stats[idx].pool == Pool::Cold {
+            if idx < self.stats.len() && self.stats[idx].pool == Pool::Cold {
                 self.stats[idx].pool = Pool::Warm;
             }
         }
@@ -750,5 +763,42 @@ mod tests {
         assert_eq!(tracker.pool(0), Pool::Active);
         assert_eq!(promoted, vec![0]);
         assert_eq!(tracker.stats[0].warm_checks_without_hit, 0);
+    }
+
+    // ── Bounds safety tests ──
+
+    #[test]
+    fn test_record_hits_out_of_bounds_skips() {
+        let mask = vec![true, true];
+        let mut tracker = RelevanceTracker::new(2, &mask, default_config());
+
+        // Mix of valid and out-of-bounds indices
+        tracker.record_hits(&[(0, 0.8), (999, 0.5), (1, 0.6)]);
+
+        // Valid hits recorded
+        assert_eq!(tracker.stats[0].hit_count, 1);
+        assert_eq!(tracker.stats[1].hit_count, 1);
+        // Image count still incremented
+        assert_eq!(tracker.images_processed(), 1);
+    }
+
+    #[test]
+    fn test_pool_out_of_bounds_returns_cold() {
+        let mask = vec![true];
+        let tracker = RelevanceTracker::new(1, &mask, default_config());
+
+        assert_eq!(tracker.pool(0), Pool::Active); // In bounds
+        assert_eq!(tracker.pool(999), Pool::Cold); // Out of bounds → Cold
+    }
+
+    #[test]
+    fn test_promote_to_warm_out_of_bounds_skips() {
+        let mask = vec![true, false];
+        let mut tracker = RelevanceTracker::new(2, &mask, default_config());
+
+        // Mix of valid and out-of-bounds
+        tracker.promote_to_warm(&[1, 999]);
+        assert_eq!(tracker.pool(1), Pool::Warm); // Valid promotion
+        assert_eq!(tracker.pool(0), Pool::Active); // Unaffected
     }
 }

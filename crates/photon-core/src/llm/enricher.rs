@@ -74,7 +74,8 @@ impl Enricher {
         for image in images {
             let permit = semaphore.clone().acquire_owned().await;
             if permit.is_err() {
-                break; // Semaphore closed
+                tracing::warn!("Enrichment semaphore closed unexpectedly — stopping batch");
+                break;
             }
             let permit = permit.unwrap();
 
@@ -86,8 +87,8 @@ impl Enricher {
             let handle = tokio::spawn(async move {
                 let result = enrich_single(&provider, &image, &options).await;
                 let success = matches!(&result, EnrichResult::Success(_));
+                drop(permit); // Release concurrency permit before callback
                 on_result(result);
-                drop(permit);
                 success
             });
 

@@ -129,7 +129,6 @@ impl LlmProvider for OpenAiProvider {
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&body)
-            .timeout(self.timeout())
             .send()
             .await
             .map_err(|e| PipelineError::Llm {

@@ -3,7 +3,10 @@
 //! Computes dot products between a single image embedding and all term embeddings
 //! in the label bank, applies SigLIP's sigmoid scoring, and returns filtered tags.
 
+use std::path::PathBuf;
+
 use crate::config::TaggingConfig;
+use crate::error::PipelineError;
 use crate::types::Tag;
 
 use super::hierarchy::HierarchyDedup;
@@ -17,6 +20,9 @@ use super::vocabulary::Vocabulary;
 /// See `docs/completions/phase-4-text-encoder-spike.md` for derivation.
 const LOGIT_SCALE: f32 = 117.33;
 const LOGIT_BIAS: f32 = -12.93;
+
+/// Tags with their raw (term_index, confidence) hits for relevance tracking.
+pub type ScoringResult = (Vec<Tag>, Vec<(usize, f32)>);
 
 /// Scores images against the full vocabulary via matrix multiplication.
 pub struct TagScorer {
@@ -90,11 +96,29 @@ impl TagScorer {
         tags
     }
 
+    /// Validate that an image embedding has the expected dimension.
+    fn validate_embedding(&self, image_embedding: &[f32]) -> Result<(), PipelineError> {
+        let dim = self.label_bank.embedding_dim();
+        if image_embedding.len() != dim {
+            return Err(PipelineError::Tagging {
+                path: PathBuf::new(),
+                message: format!(
+                    "Embedding dimension mismatch: got {}, expected {}",
+                    image_embedding.len(),
+                    dim,
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Score an image embedding against the full vocabulary.
     ///
     /// Returns tags sorted by confidence, filtered by min_confidence, limited to max_tags.
     /// Both image and term embeddings are L2-normalized, so dot product = cosine similarity.
-    pub fn score(&self, image_embedding: &[f32]) -> Vec<Tag> {
+    pub fn score(&self, image_embedding: &[f32]) -> Result<Vec<Tag>, PipelineError> {
+        self.validate_embedding(image_embedding)?;
+
         let n = self.label_bank.term_count();
         let dim = self.label_bank.embedding_dim();
         let matrix = self.label_bank.matrix();
@@ -110,7 +134,7 @@ impl TagScorer {
             scores.push((i, confidence));
         }
 
-        self.hits_to_tags(&scores)
+        Ok(self.hits_to_tags(&scores))
     }
 
     /// Score against terms in a specific pool only.
@@ -123,6 +147,11 @@ impl TagScorer {
         tracker: &RelevanceTracker,
         pool: Pool,
     ) -> Vec<(usize, f32)> {
+        debug_assert_eq!(
+            image_embedding.len(),
+            self.label_bank.embedding_dim(),
+            "score_pool called with wrong embedding dimension"
+        );
         let n = self.label_bank.term_count();
         let dim = self.label_bank.embedding_dim();
         let matrix = self.label_bank.matrix();
@@ -157,7 +186,9 @@ impl TagScorer {
         &self,
         image_embedding: &[f32],
         tracker: &RelevanceTracker,
-    ) -> (Vec<Tag>, Vec<(usize, f32)>) {
+    ) -> Result<ScoringResult, PipelineError> {
+        self.validate_embedding(image_embedding)?;
+
         // 1. Score active pool (every image)
         let mut all_hits = self.score_pool(image_embedding, tracker, Pool::Active);
 
@@ -170,7 +201,7 @@ impl TagScorer {
         // 3. Convert to tags using shared helper
         let tags = self.hits_to_tags(&all_hits);
 
-        (tags, all_hits)
+        Ok((tags, all_hits))
     }
 }
 
@@ -295,11 +326,46 @@ mod tests {
         let mask = vec![true, true, true];
         let tracker = RelevanceTracker::new(3, &mask, RelevanceConfig::default());
 
-        let (tags, raw_hits) = scorer.score_with_pools(&image_emb, &tracker);
+        let (tags, raw_hits) = scorer.score_with_pools(&image_emb, &tracker).unwrap();
 
         // Should have tags from the active pool
         assert!(!tags.is_empty());
         // raw_hits should contain all terms above min_confidence
         assert_eq!(raw_hits.len(), 3);
+    }
+
+    #[test]
+    fn test_score_dimension_mismatch() {
+        let (scorer, _, _dir) = test_scorer(3, 4);
+
+        // Embedding with wrong dimension (2 instead of 4)
+        let wrong_emb = vec![1.0, 0.0];
+        let result = scorer.score(&wrong_emb);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PipelineError::Tagging { message, .. } => {
+                assert!(message.contains("dimension mismatch"));
+                assert!(message.contains("got 2"));
+                assert!(message.contains("expected 4"));
+            }
+            other => panic!("Expected Tagging error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_score_with_pools_dimension_mismatch() {
+        let (scorer, _, _dir) = test_scorer(3, 4);
+        let mask = vec![true, true, true];
+        let tracker = RelevanceTracker::new(3, &mask, RelevanceConfig::default());
+
+        let wrong_emb = vec![1.0]; // 1 instead of 4
+        let result = scorer.score_with_pools(&wrong_emb, &tracker);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PipelineError::Tagging { message, .. } => {
+                assert!(message.contains("dimension mismatch"));
+            }
+            other => panic!("Expected Tagging error, got: {other:?}"),
+        }
     }
 }

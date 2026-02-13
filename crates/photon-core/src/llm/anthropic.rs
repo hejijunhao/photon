@@ -120,7 +120,6 @@ impl LlmProvider for AnthropicProvider {
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&body)
-            .timeout(self.timeout())
             .send()
             .await
             .map_err(|e| PipelineError::Llm {

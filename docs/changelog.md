@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.5.7](#057---2026-02-13)** — HIGH-severity fixes: lock poisoning graceful degradation, embedding dimension validation, semaphore leak prevention, single-authority timeouts, error propagation over silent swallowing (+5 tests)
 - **[0.5.6](#056---2026-02-13)** — Assessment review fixes: documentation correction, strengthened assertions, +10 tests (enricher concurrency, boundary conditions, skip options)
 - **[0.5.5](#055---2026-02-13)** — Structural cleanup: module visibility tightening, dead code removal, +10 tests (enricher, integration edge cases)
 - **[0.5.4](#054---2026-02-13)** — MEDIUM-severity correctness fixes: 10 bugs across config, tagging, pipeline, and CLI — `--skip-existing` JSON support, Warm→Cold demotion, content-based format detection
@@ -37,6 +38,31 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.5.7] - 2026-02-13
+
+### Summary
+
+All 5 HIGH-severity findings from the merged codebase assessment (`docs/plans/merged-assessment.md`) resolved. Lock poisoning no longer cascades through batches, embedding dimension mismatches return errors instead of panicking, the enricher semaphore can't leak on callback panic, provider timeouts no longer compete with the enricher timeout, and I/O errors in validation are properly propagated instead of silently swallowed. 210 tests (+5), zero clippy warnings.
+
+### Fixed
+
+- **Lock poisoning graceful degradation** (H1, `pipeline/processor.rs`) — replaced 7 `.expect()` calls on `RwLock` with `map_err()` / `.ok()?` / `if let Ok()`. Poisoned locks skip tagging and return empty `Vec<Tag>` — all other pipeline outputs (hash, embedding, metadata, thumbnail) preserved. `save_relevance()` propagates lock errors as `PipelineError::Tagging`.
+- **Embedding dimension validation** (H2, `tagging/scorer.rs`, `tagging/relevance.rs`) — added `validate_embedding()` check at entry to `score()` and `score_with_pools()`, returning `PipelineError::Tagging` on mismatch. `score_pool()` uses `debug_assert_eq!` (private, called after validation). `record_hits()`, `pool()`, and `promote_to_warm()` bounds-check indices with `tracing::warn` + skip on out-of-bounds.
+- **Enricher semaphore leak prevention** (H4, `llm/enricher.rs`) — moved `drop(permit)` before `on_result(result)` so the concurrency permit is released even if the callback panics. Also improves throughput — next LLM request starts immediately while the callback runs. Added `tracing::warn!` on unexpected semaphore closure.
+- **Single-authority timeout** (H6, `llm/anthropic.rs`, `llm/openai.rs`, `llm/ollama.rs`) — removed `.timeout()` from `generate()` in all 3 providers. The enricher's `tokio::time::timeout` is now the single source of truth, eliminating silent inner-timeout capping and ensuring the retry logic fires correctly. Ollama's `is_available()` 5-second health-check timeout retained (separate concern).
+- **Error propagation over silent swallowing** (H5, `pipeline/validate.rs`, `pipeline/decode.rs`) — `validate.rs:61`: replaced `.unwrap_or(0)` with `.map_err()` → `PipelineError::Decode` preserving the OS error message. `decode.rs`: replaced JPEG fallback with content-based detection via `with_guessed_format()`, falling back to `ImageFormat::from_path()` → `PipelineError::UnsupportedFormat`. Added clarifying comment on benign `decode.rs:120` (value overwritten by caller).
+
+### Added
+
+- **5 tests** — `test_score_dimension_mismatch`, `test_score_with_pools_dimension_mismatch` (scorer.rs); `test_record_hits_out_of_bounds_skips`, `test_pool_out_of_bounds_returns_cold`, `test_promote_to_warm_out_of_bounds_skips` (relevance.rs).
+- **`ScoringResult` type alias** (`tagging/scorer.rs`, re-exported from `tagging/mod.rs`) — `(Vec<Tag>, Vec<(usize, f32)>)` to satisfy clippy `type_complexity` after `score_with_pools()` return type changed to `Result`.
+
+### Tests
+
+210 tests passing (37 CLI + 153 core + 20 integration), zero clippy warnings, zero formatting violations.
 
 ---
 

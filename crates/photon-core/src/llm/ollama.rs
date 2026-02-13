@@ -87,7 +87,6 @@ impl LlmProvider for OllamaProvider {
             .client
             .post(&url)
             .json(&body)
-            .timeout(self.timeout())
             .send()
             .await
             .map_err(|e| PipelineError::Llm {

@@ -98,15 +98,25 @@ impl ImageDecoder {
                 path: path.to_path_buf(),
                 message: format!("Cannot detect image format: {}", e),
             })?;
-        let format = reader
-            .format()
-            .unwrap_or_else(|| ImageFormat::from_path(path).unwrap_or(ImageFormat::Jpeg));
+        let format = match reader.format() {
+            Some(f) => f,
+            None => ImageFormat::from_path(path).map_err(|_| PipelineError::UnsupportedFormat {
+                path: path.to_path_buf(),
+                format: path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+            })?,
+        };
         let image = reader.decode().map_err(|e| PipelineError::Decode {
             path: path.to_path_buf(),
             message: e.to_string(),
         })?;
 
         let (width, height) = image.dimensions();
+        // Note: file_size is overwritten by the caller (decode()) with the value
+        // from metadata() at line 72. unwrap_or(0) is a benign placeholder here.
         let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
         Ok(DecodedImage {

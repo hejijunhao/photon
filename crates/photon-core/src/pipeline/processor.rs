@@ -294,8 +294,14 @@ impl ImageProcessor {
     pub fn save_relevance(&self, config: &Config) -> Result<()> {
         if let (Some(scorer_lock), Some(tracker_lock)) = (&self.tag_scorer, &self.relevance_tracker)
         {
-            let scorer = scorer_lock.read().expect("TagScorer lock poisoned");
-            let tracker = tracker_lock.read().expect("RelevanceTracker lock poisoned");
+            let scorer = scorer_lock.read().map_err(|e| PipelineError::Tagging {
+                path: std::path::PathBuf::from("<relevance-save>"),
+                message: format!("TagScorer lock poisoned: {e}"),
+            })?;
+            let tracker = tracker_lock.read().map_err(|e| PipelineError::Tagging {
+                path: std::path::PathBuf::from("<relevance-save>"),
+                message: format!("RelevanceTracker lock poisoned: {e}"),
+            })?;
             let taxonomy_dir = config.taxonomy_dir();
             std::fs::create_dir_all(&taxonomy_dir).map_err(|e| PipelineError::Model {
                 message: format!("Failed to create taxonomy dir {:?}: {}", taxonomy_dir, e),
@@ -426,71 +432,80 @@ impl ImageProcessor {
                 // Pool-aware scoring (relevance pruning enabled)
                 (Some(scorer_lock), Some(tracker_lock), emb) if !emb.is_empty() => {
                     // Phase 1: Score under READ lock (concurrent, ~2ms)
-                    let (tags, raw_hits) = {
-                        let scorer = scorer_lock
-                            .read()
-                            .expect("TagScorer lock poisoned during scoring");
-                        let tracker = tracker_lock
-                            .read()
-                            .expect("RelevanceTracker lock poisoned during scoring");
-                        scorer.score_with_pools(emb, &tracker)
-                    };
-                    // Read locks dropped here
+                    let scoring_result: Option<crate::tagging::ScoringResult> = (|| {
+                        let scorer = scorer_lock.read().ok()?;
+                        let tracker = tracker_lock.read().ok()?;
+                        scorer.score_with_pools(emb, &tracker).ok()
+                    })(
+                    );
 
-                    // Phase 2: Record hits + periodic sweep under WRITE lock (brief, ~μs)
-                    {
-                        let mut tracker = tracker_lock
-                            .write()
-                            .expect("RelevanceTracker lock poisoned during hit recording");
-                        tracker.record_hits(&raw_hits);
+                    if let Some((tags, raw_hits)) = scoring_result {
+                        // Phase 2: Record hits + periodic sweep under WRITE lock (brief, ~μs)
+                        if let Ok(mut tracker) = tracker_lock.write() {
+                            tracker.record_hits(&raw_hits);
 
-                        // Periodic sweep + neighbor expansion
-                        if tracker
-                            .images_processed()
-                            .is_multiple_of(self.sweep_interval)
-                            && tracker.images_processed() > 0
-                        {
-                            let promoted = tracker.sweep();
-                            if !promoted.is_empty() && self.neighbor_expansion {
-                                let scorer = scorer_lock
-                                    .read()
-                                    .expect("TagScorer lock poisoned during neighbor expansion");
-                                let siblings =
-                                    NeighborExpander::expand_all(scorer.vocabulary(), &promoted);
-                                let cold_siblings: Vec<usize> = siblings
-                                    .iter()
-                                    .filter(|&&i| tracker.pool(i) == Pool::Cold)
-                                    .copied()
-                                    .collect();
-                                if !cold_siblings.is_empty() {
-                                    tracker.promote_to_warm(&cold_siblings);
-                                    tracing::debug!(
-                                        "Neighbor expansion: {} promoted, {} siblings queued",
-                                        promoted.len(),
-                                        cold_siblings.len()
-                                    );
+                            // Periodic sweep + neighbor expansion
+                            if tracker
+                                .images_processed()
+                                .is_multiple_of(self.sweep_interval)
+                                && tracker.images_processed() > 0
+                            {
+                                let promoted = tracker.sweep();
+                                if !promoted.is_empty() && self.neighbor_expansion {
+                                    if let Ok(scorer) = scorer_lock.read() {
+                                        let siblings = NeighborExpander::expand_all(
+                                            scorer.vocabulary(),
+                                            &promoted,
+                                        );
+                                        let cold_siblings: Vec<usize> = siblings
+                                            .iter()
+                                            .filter(|&&i| tracker.pool(i) == Pool::Cold)
+                                            .copied()
+                                            .collect();
+                                        if !cold_siblings.is_empty() {
+                                            tracker.promote_to_warm(&cold_siblings);
+                                            tracing::debug!(
+                                                "Neighbor expansion: {} promoted, {} siblings queued",
+                                                promoted.len(),
+                                                cold_siblings.len()
+                                            );
+                                        }
+                                    }
                                 }
+                                let (active, warm, cold) = tracker.pool_counts();
+                                tracing::debug!(
+                                    "Pool sweep: {} active, {} warm, {} cold",
+                                    active,
+                                    warm,
+                                    cold
+                                );
                             }
-                            let (active, warm, cold) = tracker.pool_counts();
-                            tracing::debug!(
-                                "Pool sweep: {} active, {} warm, {} cold",
-                                active,
-                                warm,
-                                cold
+                        } else {
+                            tracing::warn!(
+                                "RelevanceTracker write lock poisoned — skipping hit recording"
                             );
                         }
-                    }
-                    // Write lock dropped here
 
-                    tags
+                        tags
+                    } else {
+                        tracing::warn!(
+                            "Lock poisoned or scoring failed — skipping tagging for {:?}",
+                            path
+                        );
+                        vec![]
+                    }
                 }
                 // No relevance tracking — score all terms (4a behavior)
-                (Some(scorer_lock), None, emb) if !emb.is_empty() => {
-                    let scorer = scorer_lock
-                        .read()
-                        .expect("TagScorer lock poisoned during scoring");
-                    scorer.score(emb)
-                }
+                (Some(scorer_lock), None, emb) if !emb.is_empty() => match scorer_lock.read() {
+                    Ok(scorer) => scorer.score(emb).unwrap_or_else(|e| {
+                        tracing::warn!("Scoring failed for {:?}: {e}", path);
+                        vec![]
+                    }),
+                    Err(_) => {
+                        tracing::warn!("TagScorer lock poisoned — skipping tagging for {:?}", path);
+                        vec![]
+                    }
+                },
                 _ => vec![],
             }
         } else {

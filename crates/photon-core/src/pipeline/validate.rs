@@ -58,7 +58,10 @@ impl Validator {
         })?;
 
         let mut header = [0u8; 12];
-        let bytes_read = file.read(&mut header).unwrap_or(0);
+        let bytes_read = file.read(&mut header).map_err(|e| PipelineError::Decode {
+            path: path.to_path_buf(),
+            message: format!("Failed to read file header: {e}"),
+        })?;
 
         if bytes_read < 4 {
             return Err(PipelineError::Decode {
