@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.6.3](#063---2026-02-13)** — Speed Phase 4: cheap `--skip-existing` pre-filter (path+size matching, zero I/O), zero-copy label bank save/load (~209MB allocation eliminated), reduced peak memory in progressive encoding (move semantics over clone)
 - **[0.6.2](#062---2026-02-13)** — Speed Phase 3: ndarray vectorized scoring with BLAS/Accelerate on macOS, precomputed pool index lists (~30x fewer iterations on tagging hot path)
 - **[0.6.1](#061---2026-02-13)** — Speed Phase 2: concurrent batch processing via `buffer_unordered(parallel)`, skip-existing pre-filtering, `--parallel` now controls pipeline concurrency (expected 4-8x throughput)
 - **[0.6.0](#060---2026-02-13)** — Speed Phase 1: read-once I/O, cached perceptual hasher, preprocess before `spawn_blocking` (~80x less data across thread boundary), raw buffer preprocessing, zero-clone batch output
@@ -42,6 +43,25 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.6.3] - 2026-02-13
+
+### Summary
+
+Speed Phase 4 — I/O and allocation optimizations. The `--skip-existing` pre-filter no longer reads or hashes files — it matches by (path, size) from the output file in microseconds instead of reading each file through BLAKE3. Label bank save/load uses `unsafe` byte reinterpretation to eliminate ~209MB temporary allocations on save and halve peak memory on load. Progressive encoding uses move semantics (`std::mem::replace`) instead of cloning the growing label bank per chunk, reducing peak memory per swap. 3 files changed, no new dependencies. 220 tests (+4), zero clippy warnings.
+
+### Changed
+
+- **Cheap `--skip-existing` pre-filter** (`cli/process/batch.rs`) — `load_existing_hashes()` renamed to `load_existing_entries()`, now returns `HashMap<(PathBuf, u64), ()>` keyed by (file_path, file_size). Pre-filter uses `contains_key()` instead of computing BLAKE3 hashes — zero I/O, just a HashMap lookup against metadata already available from WalkDir discovery.
+- **Zero-copy label bank save** (`tagging/label_bank.rs`) — `save()` reinterprets `&[f32]` as `&[u8]` via `std::slice::from_raw_parts` and writes directly. Eliminates ~209MB intermediate `Vec<u8>` allocation. Compile-time endianness assert: `const _: () = assert!(cfg!(target_endian = "little"));`.
+- **Zero-copy label bank load** (`tagging/label_bank.rs`) — `load()` allocates `Vec<f32>` directly, creates an `unsafe` mutable byte view, reads with `read_exact()`. Peak memory halved from ~418MB (`Vec<u8>` + `Vec<f32>`) to ~209MB (single `Vec<f32>`). File size validated via `fs::metadata()` before allocation.
+- **Move semantics in progressive encoding** (`tagging/progressive.rs`) — seed bank cloned before moving into scorer and passed directly to background task via `ProgressiveContext`, eliminating the previous read-lock + clone. Per-chunk swap uses `std::mem::replace(&mut running_bank, LabelBank::empty())` to move the bank into the scorer at zero cost, then clones back only for non-last iterations. Post-loop cache save reads from `scorer_slot` directly.
+
+### Tests
+
+220 tests passing (40 CLI + 160 core + 20 integration), zero clippy warnings, zero formatting violations.
 
 ---
 

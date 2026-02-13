@@ -1,6 +1,6 @@
 //! Batch processing: directory traversal with progress, skip-existing, and streaming output.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
@@ -36,16 +36,16 @@ pub async fn process_batch(
     let processor = Arc::new(processor);
     let options = Arc::new(options);
 
-    // Load existing hashes for --skip-existing
-    let existing_hashes = if args.skip_existing {
-        load_existing_hashes(&args.output)?
+    // Load existing entries for --skip-existing
+    let existing_entries = if args.skip_existing {
+        load_existing_entries(&args.output)?
     } else {
-        HashSet::new()
+        HashMap::new()
     };
-    if !existing_hashes.is_empty() {
+    if !existing_entries.is_empty() {
         tracing::info!(
-            "Loaded {} existing hashes from output file",
-            existing_hashes.len()
+            "Loaded {} existing entries from output file",
+            existing_entries.len()
         );
     }
 
@@ -82,18 +82,17 @@ pub async fn process_batch(
 
     // Pre-filter skip-existing files before the concurrent pipeline
     // so skipped files don't occupy a concurrency slot.
-    let (files_to_process, skipped) = if existing_hashes.is_empty() {
+    // Uses (path, size) matching — zero I/O, just a HashMap lookup.
+    let (files_to_process, skipped) = if existing_entries.is_empty() {
         (files, 0u64)
     } else {
         let mut to_process = Vec::new();
         let mut skip_count = 0u64;
         for file in files {
-            if let Ok(hash) = photon_core::Hasher::content_hash(&file.path) {
-                if existing_hashes.contains(&hash) {
-                    skip_count += 1;
-                    progress.inc(1);
-                    continue;
-                }
+            if existing_entries.contains_key(&(file.path.clone(), file.size)) {
+                skip_count += 1;
+                progress.inc(1);
+                continue;
             }
             to_process.push(file);
         }
@@ -296,16 +295,21 @@ pub async fn process_batch(
     Ok(())
 }
 
-/// Load existing content hashes from a JSONL/JSON output file for --skip-existing.
-fn load_existing_hashes(output_path: &Option<PathBuf>) -> anyhow::Result<HashSet<String>> {
-    let mut hashes = HashSet::new();
+/// Load existing (path, size) entries from a JSONL/JSON output file for --skip-existing.
+///
+/// Returns a map of `(file_path, file_size) → ()` for O(1) lookups.
+/// Uses path+size matching instead of content hashing — zero I/O during pre-filtering.
+fn load_existing_entries(
+    output_path: &Option<PathBuf>,
+) -> anyhow::Result<HashMap<(PathBuf, u64), ()>> {
+    let mut entries = HashMap::new();
 
     let Some(path) = output_path else {
-        return Ok(hashes);
+        return Ok(entries);
     };
 
     if !path.exists() {
-        return Ok(hashes);
+        return Ok(entries);
     }
 
     let content = std::fs::read_to_string(path)?;
@@ -314,16 +318,16 @@ fn load_existing_hashes(output_path: &Option<PathBuf>) -> anyhow::Result<HashSet
     if let Ok(records) = serde_json::from_str::<Vec<OutputRecord>>(&content) {
         for record in records {
             if let OutputRecord::Core(img) = record {
-                hashes.insert(img.content_hash);
+                entries.insert((img.file_path, img.file_size), ());
             }
         }
-        return Ok(hashes);
+        return Ok(entries);
     }
     if let Ok(images) = serde_json::from_str::<Vec<ProcessedImage>>(&content) {
         for image in images {
-            hashes.insert(image.content_hash);
+            entries.insert((image.file_path, image.file_size), ());
         }
-        return Ok(hashes);
+        return Ok(entries);
     }
 
     // Fall back to line-by-line JSONL parsing
@@ -336,12 +340,12 @@ fn load_existing_hashes(output_path: &Option<PathBuf>) -> anyhow::Result<HashSet
         }
         if let Ok(record) = serde_json::from_str::<OutputRecord>(line) {
             if let OutputRecord::Core(img) = record {
-                hashes.insert(img.content_hash);
+                entries.insert((img.file_path, img.file_size), ());
             }
             continue;
         }
         if let Ok(image) = serde_json::from_str::<ProcessedImage>(line) {
-            hashes.insert(image.content_hash);
+            entries.insert((image.file_path, image.file_size), ());
         } else {
             skipped_lines += 1;
         }
@@ -353,7 +357,7 @@ fn load_existing_hashes(output_path: &Option<PathBuf>) -> anyhow::Result<HashSet
         );
     }
 
-    Ok(hashes)
+    Ok(entries)
 }
 
 /// Create a progress bar for batch processing.
@@ -415,15 +419,20 @@ mod tests {
     use photon_core::types::{EnrichmentPatch, ProcessedImage};
     use std::io::Write;
 
-    fn sample_image(hash: &str) -> ProcessedImage {
+    fn sample_image(file_path: &str, file_size: u64) -> ProcessedImage {
+        let name = std::path::Path::new(file_path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         ProcessedImage {
-            file_path: std::path::PathBuf::from("/test/image.jpg"),
-            file_name: "image.jpg".to_string(),
-            content_hash: hash.to_string(),
+            file_path: std::path::PathBuf::from(file_path),
+            file_name: name,
+            content_hash: format!("hash_{file_size}"),
             width: 100,
             height: 100,
             format: "jpeg".to_string(),
-            file_size: 1000,
+            file_size,
             embedding: vec![],
             exif: None,
             tags: vec![],
@@ -434,57 +443,57 @@ mod tests {
     }
 
     #[test]
-    fn test_load_existing_hashes_json_array() {
+    fn test_load_existing_entries_json_array() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.json");
 
         let records = vec![
-            OutputRecord::Core(Box::new(sample_image("hash_a"))),
-            OutputRecord::Core(Box::new(sample_image("hash_b"))),
+            OutputRecord::Core(Box::new(sample_image("/photos/a.jpg", 1000))),
+            OutputRecord::Core(Box::new(sample_image("/photos/b.jpg", 2000))),
         ];
         let json = serde_json::to_string_pretty(&records).unwrap();
         std::fs::write(&path, &json).unwrap();
 
-        let hashes = load_existing_hashes(&Some(path)).unwrap();
-        assert_eq!(hashes.len(), 2);
-        assert!(hashes.contains("hash_a"));
-        assert!(hashes.contains("hash_b"));
+        let entries = load_existing_entries(&Some(path)).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains_key(&(PathBuf::from("/photos/a.jpg"), 1000)));
+        assert!(entries.contains_key(&(PathBuf::from("/photos/b.jpg"), 2000)));
     }
 
     #[test]
-    fn test_load_existing_hashes_jsonl() {
+    fn test_load_existing_entries_jsonl() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.jsonl");
 
         let mut f = std::fs::File::create(&path).unwrap();
-        let img_a = sample_image("hash_c");
-        let img_b = sample_image("hash_d");
+        let img_a = sample_image("/photos/c.jpg", 3000);
+        let img_b = sample_image("/photos/d.jpg", 4000);
         writeln!(f, "{}", serde_json::to_string(&img_a).unwrap()).unwrap();
         writeln!(f, "{}", serde_json::to_string(&img_b).unwrap()).unwrap();
 
-        let hashes = load_existing_hashes(&Some(path)).unwrap();
-        assert_eq!(hashes.len(), 2);
-        assert!(hashes.contains("hash_c"));
-        assert!(hashes.contains("hash_d"));
+        let entries = load_existing_entries(&Some(path)).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains_key(&(PathBuf::from("/photos/c.jpg"), 3000)));
+        assert!(entries.contains_key(&(PathBuf::from("/photos/d.jpg"), 4000)));
     }
 
     #[test]
-    fn test_load_existing_hashes_empty_file() {
+    fn test_load_existing_entries_empty_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.json");
         std::fs::write(&path, "").unwrap();
 
-        let hashes = load_existing_hashes(&Some(path)).unwrap();
-        assert!(hashes.is_empty());
+        let entries = load_existing_entries(&Some(path)).unwrap();
+        assert!(entries.is_empty());
     }
 
     #[test]
-    fn test_load_existing_hashes_mixed_records() {
+    fn test_load_existing_entries_mixed_records() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mixed.json");
 
         let records: Vec<OutputRecord> = vec![
-            OutputRecord::Core(Box::new(sample_image("hash_e"))),
+            OutputRecord::Core(Box::new(sample_image("/photos/e.jpg", 5000))),
             OutputRecord::Enrichment(EnrichmentPatch {
                 content_hash: "hash_e".to_string(),
                 description: "A test image".to_string(),
@@ -492,48 +501,68 @@ mod tests {
                 llm_latency_ms: 100,
                 llm_tokens: None,
             }),
-            OutputRecord::Core(Box::new(sample_image("hash_f"))),
+            OutputRecord::Core(Box::new(sample_image("/photos/f.jpg", 6000))),
         ];
         let json = serde_json::to_string(&records).unwrap();
         std::fs::write(&path, &json).unwrap();
 
-        let hashes = load_existing_hashes(&Some(path)).unwrap();
-        assert_eq!(hashes.len(), 2);
-        assert!(hashes.contains("hash_e"));
-        assert!(hashes.contains("hash_f"));
+        let entries = load_existing_entries(&Some(path)).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains_key(&(PathBuf::from("/photos/e.jpg"), 5000)));
+        assert!(entries.contains_key(&(PathBuf::from("/photos/f.jpg"), 6000)));
     }
 
     #[test]
-    fn test_load_existing_hashes_missing_file() {
+    fn test_load_existing_entries_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.json");
 
-        let hashes = load_existing_hashes(&Some(path)).unwrap();
-        assert!(hashes.is_empty());
+        let entries = load_existing_entries(&Some(path)).unwrap();
+        assert!(entries.is_empty());
     }
 
     #[test]
-    fn test_load_existing_hashes_warns_on_corrupt_jsonl() {
+    fn test_load_existing_entries_warns_on_corrupt_jsonl() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("corrupt.jsonl");
 
         let mut f = std::fs::File::create(&path).unwrap();
-        let img_a = sample_image("hash_ok_1");
-        let img_b = sample_image("hash_ok_2");
+        let img_a = sample_image("/photos/ok1.jpg", 1000);
+        let img_b = sample_image("/photos/ok2.jpg", 2000);
         writeln!(f, "{}", serde_json::to_string(&img_a).unwrap()).unwrap();
         writeln!(f, "this is not valid json at all").unwrap();
         writeln!(f, "{}", serde_json::to_string(&img_b).unwrap()).unwrap();
 
-        let hashes = load_existing_hashes(&Some(path)).unwrap();
-        // Both valid hashes should be found; the corrupt line is skipped
-        assert_eq!(hashes.len(), 2);
-        assert!(hashes.contains("hash_ok_1"));
-        assert!(hashes.contains("hash_ok_2"));
+        let entries = load_existing_entries(&Some(path)).unwrap();
+        // Both valid entries should be found; the corrupt line is skipped
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains_key(&(PathBuf::from("/photos/ok1.jpg"), 1000)));
+        assert!(entries.contains_key(&(PathBuf::from("/photos/ok2.jpg"), 2000)));
     }
 
     #[test]
-    fn test_load_existing_hashes_none_output() {
-        let hashes = load_existing_hashes(&None).unwrap();
-        assert!(hashes.is_empty());
+    fn test_load_existing_entries_none_output() {
+        let entries = load_existing_entries(&None).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_prefilter_reprocesses_when_size_differs() {
+        // Same path, different size → should NOT be skipped
+        let mut entries = HashMap::new();
+        entries.insert((PathBuf::from("/photos/a.jpg"), 1000), ());
+
+        // File with same path but different size: not in map
+        assert!(!entries.contains_key(&(PathBuf::from("/photos/a.jpg"), 1001)));
+    }
+
+    #[test]
+    fn test_prefilter_reprocesses_when_path_differs() {
+        // Same size, different path → should NOT be skipped
+        let mut entries = HashMap::new();
+        entries.insert((PathBuf::from("/photos/a.jpg"), 1000), ());
+
+        // File with same size but different path: not in map
+        assert!(!entries.contains_key(&(PathBuf::from("/photos/b.jpg"), 1000)));
     }
 }

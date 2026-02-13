@@ -23,6 +23,7 @@ struct ProgressiveContext {
     config: TaggingConfig,
     scorer_slot: Arc<RwLock<TagScorer>>,
     seed_indices: Vec<usize>,
+    seed_bank: LabelBank,
     cache_path: PathBuf,
     vocab_hash: String,
     chunk_size: usize,
@@ -56,6 +57,10 @@ impl ProgressiveEncoder {
             seed_indices.len(),
         );
 
+        // Clone seed bank for the background task BEFORE moving into scorer.
+        // This is a small clone (~6MB for ~2K seed terms) that avoids a later
+        // read-lock + clone from the scorer in background_encode().
+        let seed_bank_for_background = seed_bank.clone();
         let seed_scorer = TagScorer::new(seed_vocab, seed_bank, config.clone());
 
         // 2. Determine remaining terms to encode
@@ -78,8 +83,6 @@ impl ProgressiveEncoder {
         }
 
         // Install seed scorer BEFORE spawning background task.
-        // The background task reads from scorer_slot to clone the running label bank;
-        // without this, it could race against the caller and read an empty scorer.
         {
             let mut lock = scorer_slot
                 .write()
@@ -95,6 +98,7 @@ impl ProgressiveEncoder {
             config,
             scorer_slot: Arc::clone(&scorer_slot),
             seed_indices,
+            seed_bank: seed_bank_for_background,
             cache_path,
             vocab_hash,
             chunk_size,
@@ -116,18 +120,15 @@ impl ProgressiveEncoder {
         // We APPEND new embeddings rather than re-encoding everything —
         // this keeps total encoding work at O(N) not O(N * num_swaps).
         let mut encoded_indices = ctx.seed_indices;
-        let mut running_bank = {
-            let scorer = ctx
-                .scorer_slot
-                .read()
-                .expect("TagScorer lock poisoned during background encoding read");
-            scorer.label_bank().clone()
-        };
+        // Use the seed bank passed directly from start() — avoids a read-lock +
+        // clone from the scorer that was previously needed here.
+        let mut running_bank = ctx.seed_bank;
 
         let mut failed_chunks = 0usize;
-        let total_chunks = remaining_indices.chunks(ctx.chunk_size).len();
+        let chunks: Vec<&[usize]> = remaining_indices.chunks(ctx.chunk_size).collect();
+        let total_chunks = chunks.len();
 
-        for chunk in remaining_indices.chunks(ctx.chunk_size) {
+        for (chunk_idx, chunk) in chunks.into_iter().enumerate() {
             // Encode ONLY this chunk's terms in a blocking task
             let chunk_indices: Vec<usize> = chunk.to_vec();
             let chunk_vocab = ctx.full_vocabulary.subset(&chunk_indices);
@@ -163,17 +164,29 @@ impl ProgressiveEncoder {
             // Build a new scorer from the accumulated data.
             // Note: subset() preserves the order given in encoded_indices,
             // which matches the running_bank's row order.
+            //
+            // Move running_bank into the scorer (zero cost) instead of cloning.
+            // This reduces peak memory: the old scorer is dropped by the assignment
+            // before we clone back, so we never hold old + current + clone simultaneously.
             let combined_vocab = ctx.full_vocabulary.subset(&encoded_indices);
-            let new_scorer =
-                TagScorer::new(combined_vocab, running_bank.clone(), ctx.config.clone());
+            let bank = std::mem::replace(&mut running_bank, LabelBank::empty());
+            let new_scorer = TagScorer::new(combined_vocab, bank, ctx.config.clone());
 
             // Atomic swap — write lock held only for the duration of a field swap
+            // plus clone-back for the next iteration.
             {
                 let mut lock = ctx
                     .scorer_slot
                     .write()
                     .expect("TagScorer lock poisoned during background encoding swap");
-                *lock = new_scorer;
+                *lock = new_scorer; // old scorer dropped here
+
+                // Clone back only if there are more chunks — the last iteration
+                // doesn't need running_bank for append, and we save from the
+                // scorer lock post-loop instead.
+                if chunk_idx + 1 < total_chunks {
+                    running_bank = lock.label_bank().clone();
+                }
             }
 
             tracing::info!(
@@ -200,7 +213,13 @@ impl ProgressiveEncoder {
                 }
             }
 
-            if let Err(e) = running_bank.save(&ctx.cache_path, &ctx.vocab_hash) {
+            // Save from the scorer lock — running_bank was moved into the scorer
+            // on the last iteration, so we read directly from the installed scorer.
+            let scorer = ctx
+                .scorer_slot
+                .read()
+                .expect("TagScorer lock poisoned during cache save");
+            if let Err(e) = scorer.label_bank().save(&ctx.cache_path, &ctx.vocab_hash) {
                 tracing::error!("Failed to save complete label bank cache: {e}");
             } else {
                 tracing::info!(

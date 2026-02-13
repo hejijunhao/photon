@@ -3,9 +3,14 @@
 //! The label bank stores a flat N×768 matrix of text embeddings (one per vocabulary term)
 //! that can be dot-producted against image embeddings for instant scoring.
 
+use std::io::Read;
 use std::path::Path;
 
 use crate::error::PipelineError;
+
+/// Safety invariant: label bank binary format assumes little-endian f32 layout.
+/// All current target platforms (aarch64, x86_64) are little-endian.
+const _: () = assert!(cfg!(target_endian = "little"));
 
 use super::text_encoder::SigLipTextEncoder;
 use super::vocabulary::Vocabulary;
@@ -130,8 +135,16 @@ impl LabelBank {
     ///
     /// Also writes a `.meta` sidecar with vocabulary hash for cache invalidation.
     pub fn save(&self, path: &Path, vocab_hash: &str) -> Result<(), PipelineError> {
-        let bytes: Vec<u8> = self.matrix.iter().flat_map(|f| f.to_le_bytes()).collect();
-        std::fs::write(path, &bytes).map_err(|e| PipelineError::Model {
+        // SAFETY: Reinterpret &[f32] as &[u8] for direct writing. Safe because:
+        // - compile-time assert guarantees little-endian (matching on-disk format)
+        // - f32 alignment is stricter than u8, so the pointer cast is valid
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                self.matrix.as_ptr() as *const u8,
+                self.matrix.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        std::fs::write(path, bytes).map_err(|e| PipelineError::Model {
             message: format!("Failed to save label bank to {:?}: {}", path, e),
         })?;
 
@@ -159,27 +172,43 @@ impl LabelBank {
     /// Load label bank from a raw f32 binary file.
     pub fn load(path: &Path, term_count: usize) -> Result<Self, PipelineError> {
         let embedding_dim = 768;
-        let expected_len = term_count * embedding_dim * 4; // 4 bytes per f32
+        let float_count = term_count * embedding_dim;
+        let expected_bytes = float_count * std::mem::size_of::<f32>();
 
-        let bytes = std::fs::read(path).map_err(|e| PipelineError::Model {
-            message: format!("Failed to read label bank from {:?}: {}", path, e),
-        })?;
+        let file_len = std::fs::metadata(path)
+            .map_err(|e| PipelineError::Model {
+                message: format!("Failed to read label bank metadata from {:?}: {}", path, e),
+            })?
+            .len() as usize;
 
-        if bytes.len() != expected_len {
+        if file_len != expected_bytes {
             return Err(PipelineError::Model {
                 message: format!(
                     "Label bank size mismatch: expected {} bytes ({} terms), got {} bytes",
-                    expected_len,
-                    term_count,
-                    bytes.len()
+                    expected_bytes, term_count, file_len
                 ),
             });
         }
 
-        let matrix: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-            .collect();
+        // SAFETY: Read directly into Vec<f32> buffer. Safe because:
+        // - compile-time assert guarantees little-endian (matching on-disk format)
+        // - Vec<f32> is always properly aligned by Rust's allocator
+        // - read_exact guarantees the full buffer is filled before we use it
+        let mut matrix = vec![0f32; float_count];
+        let byte_slice = unsafe {
+            std::slice::from_raw_parts_mut(
+                matrix.as_mut_ptr() as *mut u8,
+                float_count * std::mem::size_of::<f32>(),
+            )
+        };
+
+        let mut file = std::fs::File::open(path).map_err(|e| PipelineError::Model {
+            message: format!("Failed to read label bank from {:?}: {}", path, e),
+        })?;
+        file.read_exact(byte_slice)
+            .map_err(|e| PipelineError::Model {
+                message: format!("Failed to read label bank data from {:?}: {}", path, e),
+            })?;
 
         tracing::info!("Loaded label bank: {} terms from {:?}", term_count, path);
 
@@ -322,5 +351,42 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("dimension mismatch"));
+    }
+
+    #[test]
+    fn test_save_load_roundtrip() {
+        let dim = 768;
+        let term_count = 10;
+        let matrix: Vec<f32> = (0..term_count * dim).map(|i| (i as f32) * 0.001).collect();
+        let bank = LabelBank {
+            matrix: matrix.clone(),
+            embedding_dim: dim,
+            term_count,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("label_bank.bin");
+        bank.save(&path, "test_hash").unwrap();
+
+        let loaded = LabelBank::load(&path, term_count).unwrap();
+        assert_eq!(loaded.term_count(), term_count);
+        assert_eq!(loaded.embedding_dim(), dim);
+        assert_eq!(loaded.matrix(), &matrix[..]);
+
+        // Verify meta sidecar was written correctly
+        assert!(LabelBank::cache_valid(&path, "test_hash"));
+        assert!(!LabelBank::cache_valid(&path, "wrong_hash"));
+    }
+
+    #[test]
+    fn test_load_size_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad_bank.bin");
+        std::fs::write(&path, &[0u8; 100]).unwrap();
+
+        let result = LabelBank::load(&path, 10);
+        assert!(result.is_err());
+        let err_msg = result.err().unwrap().to_string();
+        assert!(err_msg.contains("size mismatch"), "got: {err_msg}");
     }
 }
