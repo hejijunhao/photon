@@ -30,6 +30,11 @@
 //! }
 //! ```
 
+// Force-link BLAS (Accelerate on macOS) for ndarray's optimized dot products.
+// Without this, the linker won't pull in the blas-src symbols.
+#[cfg(target_os = "macos")]
+extern crate blas_src;
+
 // Module declarations — public modules have re-exported consumer types
 pub mod config;
 pub(crate) mod embedding;

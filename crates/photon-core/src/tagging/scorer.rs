@@ -1,9 +1,12 @@
-//! Flat brute-force scoring of image embeddings against the vocabulary.
+//! Vectorized scoring of image embeddings against the vocabulary.
 //!
-//! Computes dot products between a single image embedding and all term embeddings
-//! in the label bank, applies SigLIP's sigmoid scoring, and returns filtered tags.
+//! Uses ndarray matrix-vector operations for efficient dot products between
+//! image embeddings and term embeddings. With BLAS (Accelerate on macOS),
+//! full-vocabulary scoring becomes a single optimized sgemv call.
 
 use std::path::PathBuf;
+
+use ndarray::{ArrayView1, ArrayView2};
 
 use crate::config::TaggingConfig;
 use crate::error::PipelineError;
@@ -11,7 +14,7 @@ use crate::types::Tag;
 
 use super::hierarchy::HierarchyDedup;
 use super::label_bank::LabelBank;
-use super::relevance::{Pool, RelevanceTracker};
+use super::relevance::RelevanceTracker;
 use super::vocabulary::Vocabulary;
 
 /// SigLIP learned scaling parameters (derived from combined model logits).
@@ -114,8 +117,9 @@ impl TagScorer {
 
     /// Score an image embedding against the full vocabulary.
     ///
-    /// Returns tags sorted by confidence, filtered by min_confidence, limited to max_tags.
-    /// Both image and term embeddings are L2-normalized, so dot product = cosine similarity.
+    /// Uses a single ndarray matrix-vector multiply (sgemv with BLAS) to compute
+    /// all N cosine similarities at once, then applies SigLIP sigmoid scoring.
+    /// Both image and term embeddings are L2-normalized, so dot product = cosine.
     pub fn score(&self, image_embedding: &[f32]) -> Result<Vec<Tag>, PipelineError> {
         self.validate_embedding(image_embedding)?;
 
@@ -123,60 +127,47 @@ impl TagScorer {
         let dim = self.label_bank.embedding_dim();
         let matrix = self.label_bank.matrix();
 
-        let mut scores: Vec<(usize, f32)> = Vec::with_capacity(n);
+        // Zero-copy views into existing data — single mat-vec multiply
+        let mat = ArrayView2::from_shape((n, dim), matrix).expect("label bank shape mismatch");
+        let img = ArrayView1::from(image_embedding);
+        let cosines = mat.dot(&img);
 
-        for i in 0..n {
-            let offset = i * dim;
-            let cosine: f32 = (0..dim)
-                .map(|j| image_embedding[j] * matrix[offset + j])
-                .sum();
-            let confidence = Self::cosine_to_confidence(cosine);
-            scores.push((i, confidence));
-        }
+        let scores: Vec<(usize, f32)> = cosines
+            .iter()
+            .enumerate()
+            .map(|(i, &cosine)| (i, Self::cosine_to_confidence(cosine)))
+            .collect();
 
         Ok(self.hits_to_tags(&scores))
     }
 
-    /// Score against terms in a specific pool only.
+    /// Score only the terms at the given indices.
     ///
-    /// Takes `&RelevanceTracker` (read-only) — no write lock needed.
+    /// Uses ndarray dot products per row for vectorized computation.
     /// Returns raw `(term_index, confidence)` pairs above `min_confidence`.
-    pub fn score_pool(
-        &self,
-        image_embedding: &[f32],
-        tracker: &RelevanceTracker,
-        pool: Pool,
-    ) -> Vec<(usize, f32)> {
-        debug_assert_eq!(
-            image_embedding.len(),
-            self.label_bank.embedding_dim(),
-            "score_pool called with wrong embedding dimension"
-        );
-        let n = self.label_bank.term_count();
+    /// Designed for use with `RelevanceTracker::active_indices()` /
+    /// `warm_indices()` to avoid scanning all 68K terms.
+    pub fn score_indices(&self, image_embedding: &[f32], indices: &[usize]) -> Vec<(usize, f32)> {
         let dim = self.label_bank.embedding_dim();
         let matrix = self.label_bank.matrix();
-        let mut hits = Vec::new();
+        let img = ArrayView1::from(image_embedding);
 
-        for i in 0..n {
-            if tracker.pool(i) != pool {
-                continue;
-            }
-
-            let offset = i * dim;
-            let cosine: f32 = (0..dim)
-                .map(|j| image_embedding[j] * matrix[offset + j])
-                .sum();
-            let confidence = Self::cosine_to_confidence(cosine);
-
-            if confidence >= self.config.min_confidence {
-                hits.push((i, confidence));
-            }
-        }
-
-        hits
+        indices
+            .iter()
+            .filter_map(|&i| {
+                let offset = i * dim;
+                let row = ArrayView1::from(&matrix[offset..offset + dim]);
+                let cosine = row.dot(&img);
+                let confidence = Self::cosine_to_confidence(cosine);
+                (confidence >= self.config.min_confidence).then_some((i, confidence))
+            })
+            .collect()
     }
 
     /// Pool-aware scoring: active terms every image + warm check every Nth image.
+    ///
+    /// Uses precomputed pool index lists from `RelevanceTracker` to iterate only
+    /// relevant terms (~2K active) instead of scanning all 68K.
     ///
     /// Returns both formatted tags (for output) and raw hits (for recording in
     /// the tracker). This method does NOT mutate the tracker — the caller is
@@ -189,12 +180,12 @@ impl TagScorer {
     ) -> Result<ScoringResult, PipelineError> {
         self.validate_embedding(image_embedding)?;
 
-        // 1. Score active pool (every image)
-        let mut all_hits = self.score_pool(image_embedding, tracker, Pool::Active);
+        // 1. Score active pool (every image) — uses precomputed index list
+        let mut all_hits = self.score_indices(image_embedding, tracker.active_indices());
 
         // 2. Optionally score warm pool (every Nth image)
         if tracker.should_check_warm() {
-            let warm_hits = self.score_pool(image_embedding, tracker, Pool::Warm);
+            let warm_hits = self.score_indices(image_embedding, tracker.warm_indices());
             all_hits.extend(warm_hits);
         }
 
@@ -295,28 +286,42 @@ mod tests {
     }
 
     #[test]
-    fn test_score_pool_filters_by_pool() {
+    fn test_score_indices_scores_only_requested() {
+        let (scorer, image_emb, _dir) = test_scorer(5, 4);
+
+        // Score only indices 0 and 2 (skip 1, 3, 4)
+        let hits = scorer.score_indices(&image_emb, &[0, 2]);
+
+        // Only term 0 and 2 should appear in results
+        let hit_indices: Vec<usize> = hits.iter().map(|(i, _)| *i).collect();
+        assert!(hit_indices.contains(&0));
+        // Term 2 is all zeros, cosine = 0, confidence depends on LOGIT_BIAS
+        // With min_confidence 0.0, it should still appear
+        assert!(hit_indices.contains(&2));
+        assert!(!hit_indices.contains(&1));
+        assert!(!hit_indices.contains(&3));
+    }
+
+    #[test]
+    fn test_score_indices_uses_tracker_active_list() {
         let (scorer, image_emb, _dir) = test_scorer(3, 4);
 
-        let mask = vec![true, true, true]; // All encoded
-        let config = RelevanceConfig::default();
-        let mut tracker = RelevanceTracker::new(3, &mask, config);
-        // Set term 0 Active, term 1 Warm, term 2 stays Active
-        tracker.promote_to_warm(&[]); // no-op, just using the tracker
-                                      // Manually adjust: we need to access stats via record_hits approach
-                                      // Instead, create with correct initial state:
-                                      // All start Active since encoded_mask is all true
-                                      // Override term 1 to Warm by going through a sweep path isn't easy
-                                      // So let's just test that score_pool returns only active terms
-                                      // when all are active
-        let active_hits = scorer.score_pool(&image_emb, &tracker, Pool::Active);
-        assert_eq!(active_hits.len(), 3); // All active
+        let mask = vec![true, true, true]; // All start Active
+        let tracker = RelevanceTracker::new(3, &mask, RelevanceConfig::default());
 
-        let warm_hits = scorer.score_pool(&image_emb, &tracker, Pool::Warm);
-        assert!(warm_hits.is_empty()); // None warm
+        // Active indices should contain all 3 terms
+        assert_eq!(tracker.active_indices().len(), 3);
+        assert!(tracker.warm_indices().is_empty());
 
-        let cold_hits = scorer.score_pool(&image_emb, &tracker, Pool::Cold);
-        assert!(cold_hits.is_empty()); // None cold
+        let hits = scorer.score_indices(&image_emb, tracker.active_indices());
+        assert_eq!(hits.len(), 3); // All active, all scored
+    }
+
+    #[test]
+    fn test_score_indices_empty_returns_empty() {
+        let (scorer, image_emb, _dir) = test_scorer(3, 4);
+        let hits = scorer.score_indices(&image_emb, &[]);
+        assert!(hits.is_empty());
     }
 
     #[test]

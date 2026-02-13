@@ -101,9 +101,17 @@ struct RelevanceFile {
 }
 
 /// Tracks per-term scoring statistics and manages pool assignments.
+///
+/// Maintains precomputed index lists (`active_indices`, `warm_indices`) so
+/// that scoring can iterate only relevant terms instead of scanning all 68K.
+/// Lists are rebuilt after any pool mutation (`sweep`, `promote_to_warm`).
 pub struct RelevanceTracker {
     /// Per-term statistics, indexed parallel to vocabulary.
     stats: Vec<TermStats>,
+    /// Precomputed indices of Active-pool terms (scored every image).
+    active_indices: Vec<usize>,
+    /// Precomputed indices of Warm-pool terms (scored every Nth image).
+    warm_indices: Vec<usize>,
     /// Total images processed overall.
     images_processed: u64,
     /// Configuration for pool transitions.
@@ -126,11 +134,15 @@ impl RelevanceTracker {
                 warm_checks_without_hit: 0,
             })
             .collect();
-        Self {
+        let mut tracker = Self {
             stats,
+            active_indices: Vec::new(),
+            warm_indices: Vec::new(),
             images_processed: 0,
             config,
-        }
+        };
+        tracker.rebuild_indices();
+        tracker
     }
 
     /// Record scoring results for one image.
@@ -158,6 +170,33 @@ impl RelevanceTracker {
             stat.warm_checks_without_hit = 0;
         }
         self.images_processed += 1;
+    }
+
+    /// Rebuild precomputed index lists from current pool assignments.
+    ///
+    /// Called after any mutation that changes pool assignments (sweep,
+    /// promote_to_warm). Cost: single pass over stats (~68K iterations),
+    /// but only runs after sweeps (every ~1000 images) — not per-image.
+    fn rebuild_indices(&mut self) {
+        self.active_indices.clear();
+        self.warm_indices.clear();
+        for (i, stat) in self.stats.iter().enumerate() {
+            match stat.pool {
+                Pool::Active => self.active_indices.push(i),
+                Pool::Warm => self.warm_indices.push(i),
+                Pool::Cold => {}
+            }
+        }
+    }
+
+    /// Precomputed indices of Active-pool terms (scored every image).
+    pub fn active_indices(&self) -> &[usize] {
+        &self.active_indices
+    }
+
+    /// Precomputed indices of Warm-pool terms (scored every Nth image).
+    pub fn warm_indices(&self) -> &[usize] {
+        &self.warm_indices
     }
 
     /// Check if warm-pool scoring should happen this image.
@@ -214,6 +253,7 @@ impl RelevanceTracker {
             }
         }
 
+        self.rebuild_indices();
         newly_promoted
     }
 
@@ -246,10 +286,15 @@ impl RelevanceTracker {
     /// Only promotes Cold terms; Active/Warm terms are left unchanged.
     /// Out-of-bounds indices are silently skipped.
     pub fn promote_to_warm(&mut self, indices: &[usize]) {
+        let mut changed = false;
         for &idx in indices {
             if idx < self.stats.len() && self.stats[idx].pool == Pool::Cold {
                 self.stats[idx].pool = Pool::Warm;
+                changed = true;
             }
+        }
+        if changed {
+            self.rebuild_indices();
         }
     }
 
@@ -320,11 +365,15 @@ impl RelevanceTracker {
             })
             .collect();
 
-        Ok(Self {
+        let mut tracker = Self {
             stats,
+            active_indices: Vec::new(),
+            warm_indices: Vec::new(),
             images_processed: file.images_processed,
             config,
-        })
+        };
+        tracker.rebuild_indices();
+        Ok(tracker)
     }
 }
 

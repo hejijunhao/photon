@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.6.2](#062---2026-02-13)** — Speed Phase 3: ndarray vectorized scoring with BLAS/Accelerate on macOS, precomputed pool index lists (~30x fewer iterations on tagging hot path)
 - **[0.6.1](#061---2026-02-13)** — Speed Phase 2: concurrent batch processing via `buffer_unordered(parallel)`, skip-existing pre-filtering, `--parallel` now controls pipeline concurrency (expected 4-8x throughput)
 - **[0.6.0](#060---2026-02-13)** — Speed Phase 1: read-once I/O, cached perceptual hasher, preprocess before `spawn_blocking` (~80x less data across thread boundary), raw buffer preprocessing, zero-clone batch output
 - **[0.5.8](#058---2026-02-13)** — MEDIUM-severity fixes: silent failure logging (WalkDir, skip-existing, progressive encoder), enricher file size guard, embedding error context, nested lock elimination, bounded enrichment channel (+4 tests)
@@ -41,6 +42,29 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.6.2] - 2026-02-13
+
+### Summary
+
+Speed Phase 3 — scoring acceleration. The tagging scorer's 68K scalar dot products replaced with ndarray vectorized operations backed by Apple's Accelerate framework (BLAS) on macOS. Pool-aware scoring now uses precomputed index lists, iterating only ~2K active terms instead of scanning all 68K with per-term pool checks. Full-vocabulary `score()` becomes a single `sgemv` mat-vec multiply. Expected **~30x fewer iterations** on the pool-aware hot path, each **~2-8x faster** from hardware-accelerated dot products. 4 files changed, 3 new macOS-only dependencies. 216 tests (+2), zero clippy warnings.
+
+### Changed
+
+- **ndarray matrix-vector scoring** (`tagging/scorer.rs`) — `score()` now creates zero-copy `ArrayView2` / `ArrayView1` views over the label bank matrix and image embedding, replacing 68K individual scalar dot products with a single `mat.dot(&img)` call. On macOS this dispatches to Accelerate's `sgemv`; on Linux it uses ndarray's optimized Rust implementation.
+- **`score_indices()` replaces `score_pool()`** (`tagging/scorer.rs`) — new method accepts a `&[usize]` slice of term indices directly instead of iterating all 68K terms and checking pool membership per-term. Each dot product uses ndarray `ArrayView1::dot()`. `score_with_pools()` updated to pass `tracker.active_indices()` / `tracker.warm_indices()`.
+- **Precomputed pool index lists** (`tagging/relevance.rs`) — `RelevanceTracker` now maintains `active_indices: Vec<usize>` and `warm_indices: Vec<usize>`, rebuilt via `rebuild_indices()` after any pool mutation (`new`, `sweep`, `promote_to_warm`, `load`). Cost: one 68K-iteration rebuild per sweep (~every 1000 images), not per-image.
+- **BLAS/Accelerate on macOS** (`Cargo.toml`, `lib.rs`) — platform-conditional `blas-src` with `accelerate` feature enables ndarray's BLAS backend on macOS. `extern crate blas_src;` in `lib.rs` (cfg-gated) forces the linker to include Accelerate symbols. No BLAS dependency on Linux — ndarray falls back to its Rust implementation.
+
+### Removed
+
+- **`score_pool()`** (`tagging/scorer.rs`) — replaced by `score_indices()` which accepts precomputed index lists instead of scanning all terms with per-term pool checks.
+
+### Tests
+
+216 tests passing (38 CLI + 158 core + 20 integration), zero clippy warnings, zero formatting violations.
 
 ---
 
