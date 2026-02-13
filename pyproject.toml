@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "photon-ai"
+version = "0.1.0"
+description = "Fast image processing CLI with AI-powered tagging and embeddings"
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.8"
+keywords = ["image", "tagging", "embedding", "siglip", "ai", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Rust",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Repository = "https://github.com/hejijunhao/photon"
+Issues = "https://github.com/hejijunhao/photon/issues"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "crates/photon/Cargo.toml"
+strip = true

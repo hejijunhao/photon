@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.7.0](#070---2026-02-13)** — PyPI publishing: maturin `bindings = "bin"` config, CI workflow for 4-platform wheel builds with trusted publishing, `native-tls` → `rustls-tls` for fully self-contained binary
 - **[0.6.5](#065---2026-02-13)** — Speed Phase 5: batch ONNX embedding API (`embed_batch()`), benchmark suite overhaul — 5 broken benchmarks fixed, 5 new benchmarks added (scoring, preprocessing, e2e, batch throughput), 4 new public re-exports (+6 tests)
 - **[0.6.4](#064---2026-02-13)** — CI fix: TOML section scoping bug — 5 dependencies (`tokenizers`, `rand`, `async-trait`, `reqwest`, `futures-util`) accidentally scoped to macOS-only, breaking Linux builds
 - **[0.6.3](#063---2026-02-13)** — Speed Phase 4: cheap `--skip-existing` pre-filter (path+size matching, zero I/O), zero-copy label bank save/load (~209MB allocation eliminated), reduced peak memory in progressive encoding (move semantics over clone)
@@ -45,6 +46,29 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.7.0] - 2026-02-13
+
+### Summary
+
+PyPI publishing infrastructure. Photon can now be installed via `pip install photon-ai` — the native Rust binary is packaged into platform-specific Python wheels using maturin's `bindings = "bin"` mode (the same pattern used by ruff and uv). A new CI workflow builds wheels for 4 targets and publishes to PyPI via OIDC trusted publishing. The `reqwest` TLS backend was switched from `native-tls` (OpenSSL, dynamically linked) to `rustls-tls` (statically compiled) to produce a fully self-contained binary with no shared library dependencies. 4 files changed, no new Rust dependencies.
+
+### Added
+
+- **`pyproject.toml`** (workspace root) — maturin build configuration with `bindings = "bin"`, package name `photon-ai`, full PyPI metadata (description, license, keywords, classifiers, repository URL).
+- **`.github/workflows/pypi.yml`** — CI workflow triggered on `v*` tags and `workflow_dispatch`. Build matrix: `aarch64-apple-darwin` (macOS-14), `x86_64-apple-darwin` (macOS-13), `x86_64-unknown-linux-gnu` (Ubuntu), `aarch64-unknown-linux-gnu` (Ubuntu cross). Publish job uses OIDC trusted publishing (`id-token: write`) — no API token needed.
+- **`docs/executing/publish-pypi-next-steps.md`** — Checklist for first publish: create GitHub `pypi` environment, configure trusted publisher on pypi.org, tag release.
+- **`docs/completions/publishing-pypi.md`** — Implementation notes and local verification results.
+
+### Changed
+
+- **`reqwest`: `native-tls` → `rustls-tls`** (`Cargo.toml`) — `default-features = false` disables OpenSSL; `rustls-tls` feature statically compiles TLS via ring/rustls. Eliminates `libssl.so`/`libcrypto.so` bundling in wheels. Binary is fully self-contained (39MB stripped). This fixes a maturin bin-bindings issue where the RPATH (`$ORIGIN/../photon-ai.libs`) doesn't resolve when pip installs the binary to `bin/` and shared libs to `site-packages/.libs/`.
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations.
 
 ---
 

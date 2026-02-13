@@ -45,7 +45,13 @@
       "Bash(for:*)",
       "Bash(do if ! grep -q \"#\\\\[test\\\\]\" \"$f\")",
       "Bash(then basename \"$f\" fi done)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(maturin build:*)",
+      "Bash(unzip:*)",
+      "Bash(photon --version:*)",
+      "Bash(readelf:*)",
+      "Bash(pip show:*)",
+      "Bash(pip uninstall:*)"
     ]
   }
 }
