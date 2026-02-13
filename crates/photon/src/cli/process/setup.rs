@@ -147,6 +147,7 @@ fn create_enricher(
         timeout_ms: config.limits.llm_timeout_ms,
         retry_attempts: config.pipeline.retry_attempts,
         retry_delay_ms: config.pipeline.retry_delay_ms,
+        max_file_size_mb: config.limits.max_file_size_mb,
     };
 
     Ok(Some(photon_core::Enricher::new(provider, options)))

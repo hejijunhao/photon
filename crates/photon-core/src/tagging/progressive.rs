@@ -124,7 +124,8 @@ impl ProgressiveEncoder {
             scorer.label_bank().clone()
         };
 
-        let mut all_chunks_succeeded = true;
+        let mut failed_chunks = 0usize;
+        let total_chunks = remaining_indices.chunks(ctx.chunk_size).len();
 
         for chunk in remaining_indices.chunks(ctx.chunk_size) {
             // Encode ONLY this chunk's terms in a blocking task
@@ -141,12 +142,12 @@ impl ProgressiveEncoder {
                 Ok(Ok(bank)) => bank,
                 Ok(Err(e)) => {
                     tracing::error!("Background encoding chunk failed: {e}");
-                    all_chunks_succeeded = false;
+                    failed_chunks += 1;
                     continue;
                 }
                 Err(e) => {
                     tracing::error!("Background encoding task panicked: {e}");
-                    all_chunks_succeeded = false;
+                    failed_chunks += 1;
                     continue;
                 }
             };
@@ -154,7 +155,7 @@ impl ProgressiveEncoder {
             // Append the new chunk's embeddings to the running bank
             if let Err(e) = running_bank.append(&chunk_bank) {
                 tracing::error!("Failed to append chunk to label bank: {e}");
-                all_chunks_succeeded = false;
+                failed_chunks += 1;
                 continue;
             }
             encoded_indices.extend_from_slice(&chunk_indices);
@@ -182,7 +183,14 @@ impl ProgressiveEncoder {
             );
         }
 
-        if all_chunks_succeeded {
+        if failed_chunks > 0 {
+            tracing::warn!(
+                "Progressive encoding: {failed_chunks}/{total_chunks} chunks failed — \
+                 vocabulary is incomplete ({} of {} terms encoded). Skipping cache save.",
+                encoded_indices.len(),
+                total_terms,
+            );
+        } else {
             // All terms encoded — save complete cache to disk.
             // First ensure the parent directory exists.
             if let Some(parent) = ctx.cache_path.parent() {
@@ -201,13 +209,6 @@ impl ProgressiveEncoder {
                     ctx.cache_path,
                 );
             }
-        } else {
-            tracing::warn!(
-                "Progressive encoding had failures — skipping cache save to avoid corruption. \
-                 {} of {} terms encoded this session.",
-                encoded_indices.len(),
-                total_terms,
-            );
         }
     }
 }

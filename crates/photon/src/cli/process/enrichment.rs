@@ -11,7 +11,7 @@ pub async fn run_enrichment_collect(
 ) -> anyhow::Result<Vec<OutputRecord>> {
     tracing::info!("Starting LLM enrichment for {} images...", results.len());
 
-    let (tx, rx) = std::sync::mpsc::channel::<OutputRecord>();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<OutputRecord>(64);
 
     let enricher_handle = {
         let tx = tx;

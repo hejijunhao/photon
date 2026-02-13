@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.5.8](#058---2026-02-13)** — MEDIUM-severity fixes: silent failure logging (WalkDir, skip-existing, progressive encoder), enricher file size guard, embedding error context, nested lock elimination, bounded enrichment channel (+4 tests)
 - **[0.5.7](#057---2026-02-13)** — HIGH-severity fixes: lock poisoning graceful degradation, embedding dimension validation, semaphore leak prevention, single-authority timeouts, error propagation over silent swallowing (+5 tests)
 - **[0.5.6](#056---2026-02-13)** — Assessment review fixes: documentation correction, strengthened assertions, +10 tests (enricher concurrency, boundary conditions, skip options)
 - **[0.5.5](#055---2026-02-13)** — Structural cleanup: module visibility tightening, dead code removal, +10 tests (enricher, integration edge cases)
@@ -38,6 +39,33 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.5.8] - 2026-02-13
+
+### Summary
+
+All 8 MEDIUM-severity findings from the merged codebase assessment resolved. Silent failures now log warnings (directory traversal errors, skip-existing parse failures, progressive encoding chunk failures), the enricher guards against oversized file reads, ONNX embedding errors include the triggering file path, nested lock acquisition in the scoring path is eliminated, and the CLI enrichment channel is bounded. 214 tests (+4), zero clippy warnings.
+
+### Fixed
+
+- **WalkDir error logging** (M1, `pipeline/discovery.rs`) — replaced `.filter_map(|e| e.ok())` with explicit `match` + `tracing::warn!`. Added `.max_depth(256)` as defense-in-depth against symlink cycles. Directory traversal errors (permission denied, broken symlinks) are now visible instead of silently skipped.
+- **Skip-existing parse failure warnings** (M3, `cli/process/batch.rs`) — `load_existing_hashes()` now logs when JSON array parse fails and falls back to JSONL, counts unparseable JSONL lines and warns with reprocessing notice, and warns when the JSON merge-load for `--skip-existing` fails.
+- **Progressive encoder failure summary** (M8, `tagging/progressive.rs`) — replaced boolean `all_chunks_succeeded` with `failed_chunks` counter. Logs a summary: `"Progressive encoding: {failed}/{total} chunks failed — vocabulary is incomplete"`.
+- **Enricher file size guard** (M4, `llm/enricher.rs`) — added `max_file_size_mb` to `EnrichOptions` (default: 100). `enrich_single()` now checks `tokio::fs::metadata()` before reading — oversized files return `EnrichResult::Failure` without loading into memory.
+- **Embedding error context** (M7, `embedding/siglip.rs`, `embedding/mod.rs`) — added `path: &Path` parameter to `SigLipSession::embed()` and `EmbeddingEngine::embed()`. All 6 ONNX error sites now include the triggering image path instead of empty `PathBuf`.
+- **Progressive + relevance config warning** (M5, `config/validate.rs`) — `validate()` now warns when both `progressive.enabled` and `relevance.enabled` are true, since relevance pruning is inactive during progressive encoding.
+- **Nested lock elimination** (M6, `pipeline/processor.rs`) — restructured pool-aware scoring into three independent lock phases (record hits → expand neighbors → promote). No lock is ever held while acquiring another. Documented lock ordering invariant.
+- **Bounded enrichment channel** (M2, `cli/process/enrichment.rs`) — replaced unbounded `channel()` with `sync_channel(64)`, applying backpressure when enrichment patches outpace consumption (~12KB buffer cap).
+
+### Added
+
+- **4 tests** — `test_discover_logs_on_permission_error` (discovery.rs, `#[cfg(unix)]`), `test_load_existing_hashes_warns_on_corrupt_jsonl` (batch.rs), `test_enricher_skips_oversized_file` (enricher.rs), `test_validate_warns_on_progressive_and_relevance` (validate.rs).
+
+### Tests
+
+214 tests passing (38 CLI + 156 core + 20 integration), zero clippy warnings, zero formatting violations.
 
 ---
 

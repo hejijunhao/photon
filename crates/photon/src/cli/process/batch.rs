@@ -39,6 +39,10 @@ pub async fn process_batch(
     let mut skipped: u64 = 0;
     let mut total_bytes: u64 = 0;
     let start_time = std::time::Instant::now();
+    // Collected results: needed for JSON array output (format requires all items)
+    // and for LLM enrichment (enricher needs image metadata). For JSONL-only
+    // without LLM, results are streamed directly (lines 84-91, 94-100) and
+    // this Vec stays empty.
     let mut results = Vec::new();
 
     // Stream JSONL directly to file (avoids collecting all results in memory)
@@ -153,6 +157,12 @@ pub async fn process_batch(
                 let content = std::fs::read_to_string(output_path)?;
                 if let Ok(records) = serde_json::from_str::<Vec<OutputRecord>>(&content) {
                     existing_records = records;
+                } else {
+                    tracing::warn!(
+                        "--skip-existing: failed to parse existing JSON output at {:?} — \
+                         existing records will not be merged",
+                        output_path
+                    );
                 }
             }
             let file = File::create(output_path)?;
@@ -270,6 +280,8 @@ fn load_existing_hashes(output_path: &Option<PathBuf>) -> anyhow::Result<HashSet
     }
 
     // Fall back to line-by-line JSONL parsing
+    tracing::debug!("Output file is not a JSON array — trying JSONL line-by-line");
+    let mut skipped_lines = 0u64;
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -283,7 +295,15 @@ fn load_existing_hashes(output_path: &Option<PathBuf>) -> anyhow::Result<HashSet
         }
         if let Ok(image) = serde_json::from_str::<ProcessedImage>(line) {
             hashes.insert(image.content_hash);
+        } else {
+            skipped_lines += 1;
         }
+    }
+    if skipped_lines > 0 {
+        tracing::warn!(
+            "--skip-existing: {skipped_lines} lines in output file could not be parsed — \
+             those images will be reprocessed"
+        );
     }
 
     Ok(hashes)
@@ -443,6 +463,25 @@ mod tests {
 
         let hashes = load_existing_hashes(&Some(path)).unwrap();
         assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn test_load_existing_hashes_warns_on_corrupt_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt.jsonl");
+
+        let mut f = std::fs::File::create(&path).unwrap();
+        let img_a = sample_image("hash_ok_1");
+        let img_b = sample_image("hash_ok_2");
+        writeln!(f, "{}", serde_json::to_string(&img_a).unwrap()).unwrap();
+        writeln!(f, "this is not valid json at all").unwrap();
+        writeln!(f, "{}", serde_json::to_string(&img_b).unwrap()).unwrap();
+
+        let hashes = load_existing_hashes(&Some(path)).unwrap();
+        // Both valid hashes should be found; the corrupt line is skipped
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains("hash_ok_1"));
+        assert!(hashes.contains("hash_ok_2"));
     }
 
     #[test]

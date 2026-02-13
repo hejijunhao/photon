@@ -46,9 +46,16 @@ impl FileDiscovery {
 
         for entry in WalkDir::new(path)
             .follow_links(true)
+            .max_depth(256)
             .into_iter()
-            .filter_map(|e| e.ok())
         {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!("Skipping directory entry: {e}");
+                    continue;
+                }
+            };
             let entry_path = entry.path();
             if entry_path.is_file() && self.is_supported(entry_path) {
                 if let Ok(meta) = entry.metadata() {
@@ -101,6 +108,40 @@ mod tests {
         assert!(discovery.is_supported(Path::new("test.webp")));
         assert!(!discovery.is_supported(Path::new("test.txt")));
         assert!(!discovery.is_supported(Path::new("test.pdf")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_discover_logs_on_permission_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Create two subdirs: one readable, one with permissions revoked
+        let readable = root.join("readable");
+        let unreadable = root.join("unreadable");
+        std::fs::create_dir_all(&readable).unwrap();
+        std::fs::create_dir_all(&unreadable).unwrap();
+
+        // Put an image in the readable subdir
+        std::fs::write(readable.join("a.jpg"), b"fake").unwrap();
+        // Put an image in the unreadable subdir
+        std::fs::write(unreadable.join("b.jpg"), b"fake").unwrap();
+
+        // Revoke permissions on the unreadable subdir
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let config = ProcessingConfig::default();
+        let discovery = FileDiscovery::new(config);
+        let files = discovery.discover(root);
+
+        // Restore permissions so tempdir cleanup succeeds
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Should find the file in the readable subdir
+        assert_eq!(files.len(), 1);
+        assert!(files[0].path.ends_with("a.jpg"));
     }
 
     #[test]

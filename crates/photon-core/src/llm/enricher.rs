@@ -22,6 +22,9 @@ pub struct EnrichOptions {
     pub retry_attempts: u32,
     /// Base backoff delay in milliseconds
     pub retry_delay_ms: u64,
+    /// Maximum file size in megabytes for enrichment reads.
+    /// Files exceeding this are skipped with a warning.
+    pub max_file_size_mb: u64,
 }
 
 impl Default for EnrichOptions {
@@ -31,6 +34,7 @@ impl Default for EnrichOptions {
             timeout_ms: 60_000,
             retry_attempts: 3,
             retry_delay_ms: 1000,
+            max_file_size_mb: 100,
         }
     }
 }
@@ -120,6 +124,28 @@ async fn enrich_single(
     image: &ProcessedImage,
     options: &EnrichOptions,
 ) -> EnrichResult {
+    // Guard: check file size before reading into memory
+    let max_bytes = options.max_file_size_mb * 1024 * 1024;
+    match tokio::fs::metadata(&image.file_path).await {
+        Ok(m) if m.len() > max_bytes => {
+            return EnrichResult::Failure(
+                image.file_path.clone(),
+                format!(
+                    "Image too large for enrichment: {} MB (limit: {} MB)",
+                    m.len() / (1024 * 1024),
+                    options.max_file_size_mb
+                ),
+            );
+        }
+        Ok(_) => {} // within limit
+        Err(e) => {
+            return EnrichResult::Failure(
+                image.file_path.clone(),
+                format!("Failed to stat image: {e}"),
+            );
+        }
+    }
+
     // Read image from disk and encode as base64
     let image_bytes = match tokio::fs::read(&image.file_path).await {
         Ok(bytes) => bytes,
@@ -353,6 +379,7 @@ mod tests {
             timeout_ms: 5000,
             retry_attempts: 0,
             retry_delay_ms: 10,
+            max_file_size_mb: 100,
         }
     }
 
@@ -490,12 +517,12 @@ mod tests {
 
         assert_eq!(succeeded, 0);
         assert_eq!(failed, 1);
-        // Verify provider was never called (file read fails first)
+        // Verify provider was never called (file stat fails first)
         assert_eq!(call_count.load(Ordering::SeqCst), 0);
         match &results[0] {
             EnrichResult::Failure(path, msg) => {
                 assert_eq!(path, &PathBuf::from("/nonexistent/path/ghost.jpg"));
-                assert!(msg.contains("Failed to read image"), "Got: {msg}");
+                assert!(msg.contains("Failed to stat image"), "Got: {msg}");
             }
             EnrichResult::Success(_) => panic!("Expected file-not-found failure"),
         }
@@ -525,9 +552,7 @@ mod tests {
         let images: Vec<_> = (0..6).map(|_| fixture_image("beach.jpg")).collect();
         let options = EnrichOptions {
             parallel: 2,
-            timeout_ms: 5000,
-            retry_attempts: 0,
-            retry_delay_ms: 10,
+            ..fast_options()
         };
         let (_, (succeeded, failed)) = run_enricher(provider, &images, options).await;
 
@@ -546,10 +571,8 @@ mod tests {
         let provider = MockProvider::failing(Some(429), "rate limited");
         let call_count = provider.call_count_handle();
         let options = EnrichOptions {
-            parallel: 4,
-            timeout_ms: 5000,
             retry_attempts: 2,
-            retry_delay_ms: 10,
+            ..fast_options()
         };
         let images = vec![fixture_image("beach.jpg")];
         let (results, (succeeded, failed)) = run_enricher(provider, &images, options).await;
@@ -583,6 +606,40 @@ mod tests {
         assert_eq!(failed, 0);
         assert_eq!(call_count.load(Ordering::SeqCst), 0);
         assert!(results.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_enricher_skips_oversized_file() {
+        let provider = MockProvider::success("should not reach");
+        let call_count = provider.call_count_handle();
+
+        // Create a temp file that exceeds the 1 MB limit
+        let dir = tempfile::tempdir().unwrap();
+        let big_file = dir.path().join("huge.jpg");
+        std::fs::write(&big_file, vec![0u8; 1024 * 1024 + 1]).unwrap();
+
+        let mut image = fixture_image("huge.jpg");
+        image.file_path = big_file;
+
+        let options = EnrichOptions {
+            max_file_size_mb: 1,
+            ..fast_options()
+        };
+        let images = vec![image];
+        let (results, (succeeded, failed)) = run_enricher(provider, &images, options).await;
+
+        assert_eq!(succeeded, 0);
+        assert_eq!(failed, 1);
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+        match &results[0] {
+            EnrichResult::Failure(_, msg) => {
+                assert!(
+                    msg.contains("too large for enrichment"),
+                    "Expected size error, got: {msg}"
+                );
+            }
+            EnrichResult::Success(_) => panic!("Expected oversized file failure"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

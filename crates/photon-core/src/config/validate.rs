@@ -65,6 +65,14 @@ impl Config {
             self.embedding.image_size = expected_size;
         }
 
+        if self.tagging.progressive.enabled && self.tagging.relevance.enabled {
+            tracing::warn!(
+                "Both progressive encoding and relevance pruning are enabled. \
+                 Relevance pruning is disabled during progressive encoding — \
+                 it activates on subsequent runs when the full label bank is cached."
+            );
+        }
+
         Ok(())
     }
 }
@@ -153,6 +161,15 @@ mod tests {
         config.limits.llm_timeout_ms = 0;
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("llm_timeout_ms"));
+    }
+
+    #[test]
+    fn test_validate_warns_on_progressive_and_relevance() {
+        let mut config = Config::default();
+        config.tagging.progressive.enabled = true;
+        config.tagging.relevance.enabled = true;
+        // Should succeed (warning only, not an error)
+        assert!(config.validate().is_ok());
     }
 
     #[test]

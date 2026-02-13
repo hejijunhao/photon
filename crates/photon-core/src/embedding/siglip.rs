@@ -63,14 +63,18 @@ impl SigLipSession {
     ///
     /// Input shape: \[1, 3, image_size, image_size\] (NCHW, normalized to \[-1, 1\]).
     /// Output: L2-normalized embedding vector (768 floats from pooler_output).
-    pub fn embed(&self, preprocessed: &Array4<f32>) -> Result<Vec<f32>, PipelineError> {
+    pub fn embed(
+        &self,
+        preprocessed: &Array4<f32>,
+        path: &Path,
+    ) -> Result<Vec<f32>, PipelineError> {
         // Convert ndarray to (shape, flat_data) for ort (avoids ndarray feature dependency).
         let shape: Vec<i64> = preprocessed.shape().iter().map(|&d| d as i64).collect();
         let flat_data: Vec<f32> = preprocessed.iter().copied().collect();
 
         let input_value =
             Value::from_array((shape, flat_data)).map_err(|e| PipelineError::Embedding {
-                path: Default::default(),
+                path: path.to_path_buf(),
                 message: format!("Failed to create input tensor: {e}"),
             })?;
 
@@ -93,7 +97,7 @@ impl SigLipSession {
             .iter()
             .find(|(name, _)| *name == "pooler_output")
             .ok_or_else(|| PipelineError::Embedding {
-                path: Default::default(),
+                path: path.to_path_buf(),
                 message: "Model did not produce pooler_output".to_string(),
             })?;
 
@@ -102,7 +106,7 @@ impl SigLipSession {
                 .1
                 .try_extract_tensor::<f32>()
                 .map_err(|e| PipelineError::Embedding {
-                    path: Default::default(),
+                    path: path.to_path_buf(),
                     message: format!("Failed to extract pooler_output tensor: {e}"),
                 })?;
 
@@ -115,7 +119,7 @@ impl SigLipSession {
             }
             _ => {
                 return Err(PipelineError::Embedding {
-                    path: Default::default(),
+                    path: path.to_path_buf(),
                     message: format!("Unexpected pooler_output shape: {:?}", shape),
                 });
             }

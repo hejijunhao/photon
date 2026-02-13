@@ -66,9 +66,9 @@ impl EmbeddingEngine {
     /// Generate an embedding vector for an image.
     ///
     /// Returns an L2-normalized Vec<f32> (typically 768 dimensions).
-    pub fn embed(&self, image: &DynamicImage) -> Result<Vec<f32>, PipelineError> {
+    pub fn embed(&self, image: &DynamicImage, path: &Path) -> Result<Vec<f32>, PipelineError> {
         let tensor = preprocess(image, self.image_size);
-        self.session.embed(&tensor)
+        self.session.embed(&tensor, path)
     }
 
     /// Check whether the model files exist on disk.

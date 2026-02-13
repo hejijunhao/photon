@@ -394,9 +394,11 @@ impl ImageProcessor {
             let image_clone = decoded.image.clone();
             let timeout_duration = Duration::from_millis(self.embed_timeout_ms);
             let embed_path = path.to_path_buf();
+            let embed_path_inner = embed_path.clone();
 
             let result = tokio::time::timeout(timeout_duration, async {
-                tokio::task::spawn_blocking(move || engine.embed(&image_clone)).await
+                tokio::task::spawn_blocking(move || engine.embed(&image_clone, &embed_path_inner))
+                    .await
             })
             .await;
 
@@ -440,38 +442,21 @@ impl ImageProcessor {
                     );
 
                     if let Some((tags, raw_hits)) = scoring_result {
-                        // Phase 2: Record hits + periodic sweep under WRITE lock (brief, ~μs)
-                        if let Ok(mut tracker) = tracker_lock.write() {
+                        // LOCK ORDERING: scorer_lock and tracker_lock must never be held
+                        // simultaneously as write locks. Read-read is safe. Acquire one,
+                        // release it, then acquire the other.
+
+                        // Phase 2a: Record hits under WRITE lock (brief, ~μs)
+                        let sweep_result = if let Ok(mut tracker) = tracker_lock.write() {
                             tracker.record_hits(&raw_hits);
 
-                            // Periodic sweep + neighbor expansion
+                            // Periodic sweep (still under write lock — sweep mutates)
                             if tracker
                                 .images_processed()
                                 .is_multiple_of(self.sweep_interval)
                                 && tracker.images_processed() > 0
                             {
                                 let promoted = tracker.sweep();
-                                if !promoted.is_empty() && self.neighbor_expansion {
-                                    if let Ok(scorer) = scorer_lock.read() {
-                                        let siblings = NeighborExpander::expand_all(
-                                            scorer.vocabulary(),
-                                            &promoted,
-                                        );
-                                        let cold_siblings: Vec<usize> = siblings
-                                            .iter()
-                                            .filter(|&&i| tracker.pool(i) == Pool::Cold)
-                                            .copied()
-                                            .collect();
-                                        if !cold_siblings.is_empty() {
-                                            tracker.promote_to_warm(&cold_siblings);
-                                            tracing::debug!(
-                                                "Neighbor expansion: {} promoted, {} siblings queued",
-                                                promoted.len(),
-                                                cold_siblings.len()
-                                            );
-                                        }
-                                    }
-                                }
                                 let (active, warm, cold) = tracker.pool_counts();
                                 tracing::debug!(
                                     "Pool sweep: {} active, {} warm, {} cold",
@@ -479,11 +464,53 @@ impl ImageProcessor {
                                     warm,
                                     cold
                                 );
+                                Some(promoted)
+                            } else {
+                                None
                             }
                         } else {
                             tracing::warn!(
                                 "RelevanceTracker write lock poisoned — skipping hit recording"
                             );
+                            None
+                        };
+                        // tracker write lock released here
+
+                        // Phase 2b: Neighbor expansion (NO nested locks)
+                        if let Some(promoted) = sweep_result {
+                            if !promoted.is_empty() && self.neighbor_expansion {
+                                // Read scorer WITHOUT holding tracker lock
+                                let cold_siblings = if let Ok(scorer) = scorer_lock.read() {
+                                    let siblings = NeighborExpander::expand_all(
+                                        scorer.vocabulary(),
+                                        &promoted,
+                                    );
+                                    // Read tracker for pool() checks (read lock, not write)
+                                    if let Ok(tracker) = tracker_lock.read() {
+                                        siblings
+                                            .iter()
+                                            .filter(|&&i| tracker.pool(i) == Pool::Cold)
+                                            .copied()
+                                            .collect::<Vec<usize>>()
+                                    } else {
+                                        vec![]
+                                    }
+                                } else {
+                                    vec![]
+                                };
+
+                                // Write-lock tracker only for the final promotion
+                                if !cold_siblings.is_empty() {
+                                    if let Ok(mut tracker) = tracker_lock.write() {
+                                        tracker.promote_to_warm(&cold_siblings);
+                                        tracing::debug!(
+                                            "Neighbor expansion: {} promoted, {} siblings queued",
+                                            promoted.len(),
+                                            cold_siblings.len()
+                                        );
+                                    }
+                                }
+                            }
                         }
 
                         tags
