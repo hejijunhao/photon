@@ -18,6 +18,9 @@ pub(crate) mod thumbnail;
 pub(crate) mod validate;
 
 // Re-exports for convenient access
+pub use decode::ImageDecoder;
 pub use discovery::{DiscoveredFile, FileDiscovery};
 pub use hash::Hasher;
+pub use metadata::MetadataExtractor;
 pub use processor::{ImageProcessor, ProcessOptions};
+pub use thumbnail::ThumbnailGenerator;

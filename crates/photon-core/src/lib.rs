@@ -48,11 +48,15 @@ pub mod types;
 
 // Re-exports for convenient access
 pub use config::Config;
+pub use embedding::preprocess::preprocess as preprocess_image;
 pub use embedding::EmbeddingEngine;
 pub use error::{ConfigError, PhotonError, PipelineError, PipelineResult, Result};
 pub use llm::{EnrichOptions, EnrichResult, Enricher, LlmProviderFactory};
 pub use output::{OutputFormat, OutputWriter};
-pub use pipeline::{DiscoveredFile, FileDiscovery, Hasher, ImageProcessor, ProcessOptions};
+pub use pipeline::{
+    DiscoveredFile, FileDiscovery, Hasher, ImageDecoder, ImageProcessor, MetadataExtractor,
+    ProcessOptions, ThumbnailGenerator,
+};
 pub use types::{EnrichmentPatch, ExifData, OutputRecord, ProcessedImage, ProcessingStats, Tag};
 
 /// Library version.

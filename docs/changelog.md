@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.6.5](#065---2026-02-13)** — Speed Phase 5: batch ONNX embedding API (`embed_batch()`), benchmark suite overhaul — 5 broken benchmarks fixed, 5 new benchmarks added (scoring, preprocessing, e2e, batch throughput), 4 new public re-exports (+6 tests)
 - **[0.6.4](#064---2026-02-13)** — CI fix: TOML section scoping bug — 5 dependencies (`tokenizers`, `rand`, `async-trait`, `reqwest`, `futures-util`) accidentally scoped to macOS-only, breaking Linux builds
 - **[0.6.3](#063---2026-02-13)** — Speed Phase 4: cheap `--skip-existing` pre-filter (path+size matching, zero I/O), zero-copy label bank save/load (~209MB allocation eliminated), reduced peak memory in progressive encoding (move semantics over clone)
 - **[0.6.2](#062---2026-02-13)** — Speed Phase 3: ndarray vectorized scoring with BLAS/Accelerate on macOS, precomputed pool index lists (~30x fewer iterations on tagging hot path)
@@ -44,6 +45,28 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.6.5] - 2026-02-13
+
+### Summary
+
+Speed Phase 5 — batch ONNX embedding inference and benchmark validation. Completes the speed improvement plan. New `embed_batch()` / `embed_batch_preprocessed()` methods on `EmbeddingEngine` stack N preprocessed tensors into a single `[N, 3, H, W]` ONNX call, amortizing session dispatch overhead. Mirrors the existing `SigLipTextEncoder::encode_batch()` pattern. The processor pipeline is unchanged — batch API is for direct library users and future GPU support. The benchmark suite is fixed (5 existing benchmarks referenced stale `pub(crate)` APIs from Phase 1 changes) and expanded with 5 new benchmarks. 5 files changed, no new dependencies. +6 tests.
+
+### Added
+
+- **Batch ONNX embedding API** (`embedding/siglip.rs`, `embedding/mod.rs`) — `SigLipSession::embed_batch()` validates tensor shapes, builds a flat `[N, 3, H, W]` batch tensor, runs a single `session.run()`, extracts `pooler_output` `[N, 768]`, chunks by embedding dimension, and L2-normalizes each vector. `EmbeddingEngine::embed_batch_preprocessed()` delegates to the session; `embed_batch()` is a convenience wrapper that also handles preprocessing.
+- **5 new benchmarks** (`benches/pipeline.rs`) — `score_68k_matvec` (synthetic 68K×768 ndarray mat-vec — the BLAS operation powering `TagScorer::score()`), `preprocess_224` and `preprocess_384` (resize+normalize a 4032×3024 image), `process_e2e_dog_jpg` (full pipeline with model, skips if absent), `batch_4_images` (concurrent 4-image throughput via `buffer_unordered`, skips if absent).
+- **4 new public re-exports** (`lib.rs`) — `ImageDecoder`, `ThumbnailGenerator`, `MetadataExtractor`, `preprocess_image`. Enables benchmarks and library users to access pipeline components without `pub(crate)` module visibility changes.
+
+### Fixed
+
+- **5 broken benchmarks** (`benches/pipeline.rs`) — stale `photon_core::pipeline::*` paths replaced with `photon_core::*` re-exports; `Hasher::perceptual_hash()` updated from associated function to instance method (changed in Phase 1); `decoder.decode()` updated to `decoder.decode_from_bytes()` (API changed in Phase 1's read-once I/O).
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations. 10 benchmarks compile and run (e2e/batch skip gracefully when ONNX models not on disk).
 
 ---
 
