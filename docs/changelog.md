@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.7.3](#073---2026-02-15)** — CI fix: drop `x86_64-apple-darwin` target — `ort` has no prebuilt ONNX Runtime binaries for Intel Mac cross-compilation. Build matrix reduced to 3 targets
 - **[0.7.2](#072---2026-02-15)** — CI fix: `ort` TLS backend `tls-native` → `tls-rustls` (eliminates `openssl-sys` from entire dep tree), `macos-13` → `macos-14` cross-compilation for x86_64-apple-darwin
 - **[0.7.1](#071---2026-02-15)** — PyPI package rename: `photon-ai` → `photon-imager` (name collision with existing `photonai` package)
 - **[0.7.0](#070---2026-02-13)** — PyPI publishing: maturin `bindings = "bin"` config, CI workflow for 4-platform wheel builds with trusted publishing, `native-tls` → `rustls-tls` for fully self-contained binary
@@ -48,6 +49,22 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.7.3] - 2026-02-15
+
+### Summary
+
+CI fix — dropped `x86_64-apple-darwin` from both `pypi.yml` and `release.yml` build matrices. The v0.7.2 `macos-13` → `macos-14` change attempted cross-compilation from ARM to Intel, but `ort-sys` has no prebuilt ONNX Runtime binaries for the `x86_64-apple-darwin` target when cross-compiling. Previously this worked only because `macos-13` was native Intel hardware. Build matrix reduced from 4 to 3 targets: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`. Pre-M1 Mac users can still build from source via `cargo install`. 2 files changed, no code changes.
+
+### Removed
+
+- **`x86_64-apple-darwin` build target** (`.github/workflows/pypi.yml`, `.github/workflows/release.yml`) — `ort` does not distribute prebuilt ONNX Runtime binaries for Intel Mac cross-compilation from ARM runners. GitHub deprecated the native `macos-13` Intel runners, making this target unbuildable without compiling ONNX Runtime from source.
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations. No code changes — CI only.
 
 ---
 
