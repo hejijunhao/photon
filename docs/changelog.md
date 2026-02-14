@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.7.1](#071---2026-02-15)** — PyPI package rename: `photon-ai` → `photon-imager` (name collision with existing `photonai` package)
 - **[0.7.0](#070---2026-02-13)** — PyPI publishing: maturin `bindings = "bin"` config, CI workflow for 4-platform wheel builds with trusted publishing, `native-tls` → `rustls-tls` for fully self-contained binary
 - **[0.6.5](#065---2026-02-13)** — Speed Phase 5: batch ONNX embedding API (`embed_batch()`), benchmark suite overhaul — 5 broken benchmarks fixed, 5 new benchmarks added (scoring, preprocessing, e2e, batch throughput), 4 new public re-exports (+6 tests)
 - **[0.6.4](#064---2026-02-13)** — CI fix: TOML section scoping bug — 5 dependencies (`tokenizers`, `rand`, `async-trait`, `reqwest`, `futures-util`) accidentally scoped to macOS-only, breaking Linux builds
@@ -46,6 +47,25 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.7.1] - 2026-02-15
+
+### Summary
+
+PyPI package rename. The original name `photon-ai` collides with the existing [`photonai`](https://pypi.org/project/photonai/) package (a machine learning pipeline library) due to PyPI's PEP 503 name normalization, which treats hyphens, underscores, and case as equivalent. Renamed to `photon-imager` across `pyproject.toml` and all publishing docs.
+
+### Changed
+
+- **`pyproject.toml`** — package name `photon-ai` → `photon-imager`.
+- **`docs/executing/publish-pypi-next-steps.md`** — updated PyPI project name and install commands.
+- **`docs/executing/publishing.md`** — updated all PyPI references (npm `@photon-ai` scope unchanged — separate namespace).
+- **`docs/completions/publishing-pypi.md`** — updated package name references.
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations. No code changes — docs only.
 
 ---
 

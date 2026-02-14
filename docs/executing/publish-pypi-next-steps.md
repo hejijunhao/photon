@@ -12,11 +12,11 @@ This is referenced by `environment: pypi` in the workflow. It gates the publish 
 
 ## 2. Configure trusted publishing on PyPI
 
-Go to **pypi.org → your account → Publishing** (or create the `photon-ai` project first via "Create a new pending publisher"):
+Go to **pypi.org → your account → Publishing** (or create the `photon-imager` project first via "Create a new pending publisher"):
 
 | Field | Value |
 |-------|-------|
-| PyPI project name | `photon-ai` |
+| PyPI project name | `photon-imager` |
 | Owner | `hejijunhao` |
 | Repository | `photon` |
 | Workflow name | `pypi.yml` |
@@ -38,6 +38,6 @@ This triggers both:
 ## 4. Verify
 
 ```bash
-pip install photon-ai
+pip install photon-imager
 photon --version
 ```

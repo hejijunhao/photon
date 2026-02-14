@@ -51,7 +51,8 @@
       "Bash(photon --version:*)",
       "Bash(readelf:*)",
       "Bash(pip show:*)",
-      "Bash(pip uninstall:*)"
+      "Bash(pip uninstall:*)",
+      "WebFetch(domain:pypi.org)"
     ]
   }
 }

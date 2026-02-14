@@ -8,7 +8,7 @@
 
 ## Summary
 
-Photon can now be distributed as a Python wheel via PyPI using maturin's `bindings = "bin"` mode. This is the same pattern used by `ruff` and `uv` — the Rust binary is packaged directly inside a platform-specific wheel, installed to the user's `bin/` directory with `pip install photon-ai`.
+Photon can now be distributed as a Python wheel via PyPI using maturin's `bindings = "bin"` mode. This is the same pattern used by `ruff` and `uv` — the Rust binary is packaged directly inside a platform-specific wheel, installed to the user's `bin/` directory with `pip install photon-imager`.
 
 ---
 
@@ -20,7 +20,7 @@ Maturin build configuration:
 - `bindings = "bin"` — ships the compiled binary, no Python extension module
 - `manifest-path = "crates/photon/Cargo.toml"` — points to the CLI crate
 - `strip = true` — reduces binary size
-- Package name: `photon-ai`
+- Package name: `photon-imager`
 - Metadata: description, license (MIT OR Apache-2.0), keywords, classifiers, repository URL
 
 ### `.github/workflows/pypi.yml`
@@ -55,7 +55,7 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 ```
 
-**Why:** With native-tls, maturin bundled `libssl.so` and `libcrypto.so` into a `.libs/` directory in the wheel. The binary's RPATH (`$ORIGIN/../photon-ai.libs`) doesn't resolve correctly when pip installs the binary to `bin/` and the libs to `site-packages/photon-ai.libs/` — a known limitation of maturin bin bindings with dynamic libraries.
+**Why:** With native-tls, maturin bundled `libssl.so` and `libcrypto.so` into a `.libs/` directory in the wheel. The binary's RPATH (`$ORIGIN/../photon-imager.libs`) doesn't resolve correctly when pip installs the binary to `bin/` and the libs to `site-packages/photon-imager.libs/` — a known limitation of maturin bin bindings with dynamic libraries.
 
 Switching to rustls eliminates the OpenSSL dependency entirely, producing a fully self-contained binary (39MB stripped). This is the same approach used by ruff, uv, and other Rust-based CLI tools distributed via PyPI.
 
@@ -89,4 +89,4 @@ photon 0.1.0
 1. **Configure trusted publishing on PyPI**: Go to pypi.org → project settings → "Publishing" → add GitHub Actions as a trusted publisher (repo: `hejijunhao/photon`, workflow: `pypi.yml`, environment: `pypi`)
 2. **Create the `pypi` environment** in GitHub repo settings → Environments
 3. **Tag a release**: `git tag v0.1.0 && git push --tags` — this triggers both `release.yml` (GitHub Release) and `pypi.yml` (PyPI upload)
-4. **Verify**: `pip install photon-ai && photon --version`
+4. **Verify**: `pip install photon-imager && photon --version`

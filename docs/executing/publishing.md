@@ -10,7 +10,7 @@ Photon is a compiled Rust binary with an ONNX Runtime dependency. Unlike pure-Py
 
 | Channel | Target audience | Install command | Priority |
 |---------|----------------|-----------------|----------|
-| **pip / PyPI** | ML/AI developers, data teams | `pip install photon-ai` | **P0** — lowest effort, best audience fit |
+| **pip / PyPI** | ML/AI developers, data teams | `pip install photon-imager` | **P0** — lowest effort, best audience fit |
 | **npm** | Node/fullstack developers | `npm install -g @photon-ai/photon` | **P1** — broadest reach |
 | **cargo install** | Rust developers | `cargo install photon` | **P2** — already works, publish to crates.io |
 
@@ -26,7 +26,7 @@ Photon is a compiled Rust binary with an ONNX Runtime dependency. Unlike pure-Py
 
 ### How it works
 
-[maturin](https://www.maturin.rs/) builds platform-specific Python wheels containing the Photon binary. When a user runs `pip install photon-ai`, pip selects the wheel matching their OS/arch and places the `photon` binary directly in their Python `bin/` directory — no Python wrapper, no runtime overhead.
+[maturin](https://www.maturin.rs/) builds platform-specific Python wheels containing the Photon binary. When a user runs `pip install photon-imager`, pip selects the wheel matching their OS/arch and places the `photon` binary directly in their Python `bin/` directory — no Python wrapper, no runtime overhead.
 
 This is exactly how **ruff** and **uv** (from Astral) distribute their Rust binaries to millions of Python users.
 
@@ -40,7 +40,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "photon-ai"
+name = "photon-imager"
 version = "0.1.0"
 description = "Fast image processing CLI with AI-powered tagging and embeddings"
 readme = "README.md"
@@ -136,9 +136,9 @@ jobs:
 ### Result
 
 ```bash
-pip install photon-ai        # install
-photon process image.jpg     # use — binary is on PATH
-pip install --upgrade photon-ai  # update
+pip install photon-imager        # install
+photon process image.jpg         # use — binary is on PATH
+pip install --upgrade photon-imager  # update
 ```
 
 ---
@@ -289,7 +289,7 @@ cargo install photon
 3. Create PyPI account + API token (or set up trusted publishing)
 4. Add `.github/workflows/pypi.yml`
 5. Tag a release, verify wheel appears on PyPI
-6. Test: `pip install photon-ai && photon --version`
+6. Test: `pip install photon-imager && photon --version`
 
 ### Phase B: npm (2-3 sessions)
 
@@ -314,11 +314,11 @@ Before proceeding, verify name availability on each registry:
 
 | Registry | Desired name | Fallback |
 |----------|-------------|----------|
-| PyPI | `photon-ai` | `photon-image`, `photon-tag` |
+| PyPI | `photon-imager` | `photon-image`, `photon-tag` |
 | npm | `@photon-ai/photon` | Scoped names are always available if we own the org |
 | crates.io | `photon` | `photon-image`, `photon-ai` |
 
-> **Note:** The name `photon` is likely taken on PyPI and crates.io. Using a scoped/suffixed name like `photon-ai` avoids conflicts and clarifies the tool's purpose.
+> **Note:** The name `photon` is likely taken on PyPI and crates.io. `photon-ai` collides with `photonai` (PyPI name normalization). Using `photon-imager` avoids conflicts and clarifies the tool's purpose.
 
 ---
 
