@@ -52,7 +52,8 @@
       "Bash(readelf:*)",
       "Bash(pip show:*)",
       "Bash(pip uninstall:*)",
-      "WebFetch(domain:pypi.org)"
+      "WebFetch(domain:pypi.org)",
+      "Bash(gh api:*)"
     ]
   }
 }

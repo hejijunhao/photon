@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.7.2](#072---2026-02-15)** — CI fix: `ort` TLS backend `tls-native` → `tls-rustls` (eliminates `openssl-sys` from entire dep tree), `macos-13` → `macos-14` cross-compilation for x86_64-apple-darwin
 - **[0.7.1](#071---2026-02-15)** — PyPI package rename: `photon-ai` → `photon-imager` (name collision with existing `photonai` package)
 - **[0.7.0](#070---2026-02-13)** — PyPI publishing: maturin `bindings = "bin"` config, CI workflow for 4-platform wheel builds with trusted publishing, `native-tls` → `rustls-tls` for fully self-contained binary
 - **[0.6.5](#065---2026-02-13)** — Speed Phase 5: batch ONNX embedding API (`embed_batch()`), benchmark suite overhaul — 5 broken benchmarks fixed, 5 new benchmarks added (scoring, preprocessing, e2e, batch throughput), 4 new public re-exports (+6 tests)
@@ -47,6 +48,23 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.7.2] - 2026-02-15
+
+### Summary
+
+CI fix — the v0.7.1 PyPI workflow failed on all 4 targets due to two issues. First, `ort` (ONNX Runtime) defaults to `tls-native`, which pulls `openssl-sys` via `ort-sys` → `ureq` → `native-tls`. The v0.7.0 `reqwest` rustls switch only eliminated OpenSSL from the HTTP client, not from `ort`'s build-time model downloader. The manylinux Docker container lacks OpenSSL dev headers, causing Linux builds to fail; macOS builds also failed at the `openssl-sys` build script. Fixed by switching `ort` to `default-features = false` with explicit `tls-rustls` — `openssl-sys` is now completely absent from the dependency tree. Second, GitHub has deprecated `macos-13` runners, breaking the `x86_64-apple-darwin` build. Fixed by using `macos-14` (ARM) with maturin cross-compilation for both `pypi.yml` and `release.yml`. 3 files changed, no new dependencies.
+
+### Changed
+
+- **`ort`: `tls-native` → `tls-rustls`** (`photon-core/Cargo.toml`) — `default-features = false` drops the default `tls-native` feature; explicit feature list: `std`, `ndarray`, `download-binaries`, `copy-dylibs`, `tls-rustls`. Eliminates `openssl-sys` from the entire dependency tree (previously pulled via `ort-sys` → `ureq` → `native-tls` → `openssl-sys`).
+- **`macos-13` → `macos-14`** (`.github/workflows/pypi.yml`, `.github/workflows/release.yml`) — `x86_64-apple-darwin` target now cross-compiles from ARM runner. GitHub deprecated `macos-13` Intel runners.
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations.
 
 ---
 

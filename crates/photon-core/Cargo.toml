@@ -34,7 +34,7 @@ base64 = "0.22"
 walkdir = "2"
 
 # Embedding / ONNX Runtime (Phase 3)
-ort = "2.0.0-rc.11"
+ort = { version = "2.0.0-rc.11", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-rustls"] }
 ndarray = "0.16"
 
 # Tagging / Text encoder (Phase 4)
