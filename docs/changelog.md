@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.7.4](#074---2026-02-15)** — CI fix: `manylinux: auto` → `manylinux: 2_28` for `aarch64-unknown-linux-gnu` PyPI wheel — `ring` crate fails to cross-compile with manylinux2014's GCC 4.8 (missing `__ARM_ARCH`)
 - **[0.7.3](#073---2026-02-15)** — CI fix: drop `x86_64-apple-darwin` target — `ort` has no prebuilt ONNX Runtime binaries for Intel Mac cross-compilation. Build matrix reduced to 3 targets
 - **[0.7.2](#072---2026-02-15)** — CI fix: `ort` TLS backend `tls-native` → `tls-rustls` (eliminates `openssl-sys` from entire dep tree), `macos-13` → `macos-14` cross-compilation for x86_64-apple-darwin
 - **[0.7.1](#071---2026-02-15)** — PyPI package rename: `photon-ai` → `photon-imager` (name collision with existing `photonai` package)
@@ -49,6 +50,22 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.7.4] - 2026-02-15
+
+### Summary
+
+CI fix — the v0.7.3 PyPI workflow failed on `aarch64-unknown-linux-gnu` because the `ring` crate (v0.17.14, pulled in via `ort` → `rustls` → `ring`) requires `__ARM_ARCH` to be defined by the assembler. The `manylinux2014-cross` Docker image uses CentOS 7's GCC 4.8, which doesn't define this macro for aarch64 targets. Fixed by switching to `manylinux: 2_28` (AlmaLinux 8, GCC 8.5) for the `aarch64-unknown-linux-gnu` target only — `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` remain on `manylinux: auto`. The `2_28` tag requires glibc 2.28+ on the target system (Ubuntu 20.04+, Debian 10+, RHEL 8+). 1 file changed, no code changes.
+
+### Changed
+
+- **`manylinux: auto` → `manylinux: 2_28`** for `aarch64-unknown-linux-gnu` (`.github/workflows/pypi.yml`) — manylinux per-target matrix variable replaces the global setting. The manylinux2014 base image (CentOS 7, GCC 4.8) cannot cross-compile `ring`'s aarch64 assembly; manylinux_2_28 (AlmaLinux 8, GCC 8.5) defines `__ARM_ARCH` correctly.
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations. No code changes — CI only.
 
 ---
 
