@@ -9,32 +9,43 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build wheel (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: macos-14
-            target: aarch64-apple-darwin
-            manylinux: auto
-            args: --release --out dist
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            manylinux: 'off'
-            args: --release --out dist --compatibility manylinux_2_38
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            manylinux: 'off'
-            args: --release --out dist --compatibility manylinux_2_38
+  build-macos:
+    name: Build wheel (aarch64-apple-darwin)
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux }}
-          args: ${{ matrix.args }}
+          target: aarch64-apple-darwin
+          args: --release --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-aarch64-apple-darwin
+          path: dist/*.whl
+
+  build-linux:
+    name: Build wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build wheel
+        run: maturin build --target ${{ matrix.target }} --release --out dist --compatibility manylinux_2_38
 
       - uses: actions/upload-artifact@v4
         with:
@@ -43,7 +54,7 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [build-macos, build-linux]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

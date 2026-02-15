@@ -6,6 +6,8 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.7.9](#079---2026-02-15)** — CI fix: split Linux PyPI builds into separate job — install maturin via pip and run directly with `--compatibility manylinux_2_38`, bypassing maturin-action's conflicting `--manylinux off` flag
+- **[0.7.8](#078---2026-02-15)** — CI fix (failed): added `--compatibility manylinux_2_38` to maturin args for Linux wheels — but maturin-action also passes `--manylinux off`, and since `--manylinux`/`--compatibility` are aliases, maturin rejects the duplicate: `Expected only one platform tag but found 2`. Also aligned pyproject.toml version with Cargo workspace version
 - **[0.7.7](#077---2026-02-15)** — CI fix: PyPI publish step `PyO3/maturin-action` → `pypa/gh-action-pypi-publish` — maturin-action runs uploads inside Docker, which was failing; the standard PyPI trusted publisher action uses twine directly without Docker
 - **[0.7.6](#076---2026-02-15)** — CI fix: native ARM64 runner (`ubuntu-24.04-arm`) for `aarch64-unknown-linux-gnu` — eliminates cross-compilation; `manylinux_2_28` Docker image (GCC 7.5, glibc 2.28) too old for `ort` prebuilt ONNX Runtime. Also restores aarch64 Linux target in release workflow
 - **[0.7.5](#075---2026-02-15)** — CI fix: `manylinux: auto` → `manylinux: 'off'` for `x86_64-unknown-linux-gnu` PyPI wheel — `ort` prebuilt ONNX Runtime requires glibc 2.38+ (`__isoc23_strtoll`, `__libc_single_threaded`), unavailable in any manylinux Docker image
@@ -53,6 +55,40 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.7.9] - 2026-02-15
+
+### Summary
+
+CI fix — the v0.7.8 attempt to add `--compatibility manylinux_2_38` via the maturin-action's `args` parameter failed because the action also injects `--manylinux off` (from the `manylinux: 'off'` setting), and `--manylinux`/`--compatibility` are aliases for the same maturin flag — maturin rejects the duplicate with `Expected only one platform tag but found 2`. Fixed by splitting Linux builds into a separate job that installs maturin via pip and runs it directly, bypassing the action entirely. macOS continues to use `maturin-action`. Version bumped to 0.7.9 (0.7.8 tag already pushed). 3 files changed.
+
+### Changed
+
+- **Split `build` job into `build-macos` + `build-linux`** (`.github/workflows/pypi.yml`) — macOS uses `PyO3/maturin-action@v1` as before; Linux installs maturin via pip and runs `maturin build --compatibility manylinux_2_38` directly, avoiding the action's conflicting `--manylinux off` injection.
+- **Version `0.7.8` → `0.7.9`** (`Cargo.toml`, `pyproject.toml`) — 0.7.8 tag already pushed with the broken workflow.
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations. No code changes — CI only.
+
+---
+
+## [0.7.8] - 2026-02-15
+
+### Summary
+
+CI fix (failed) — v0.7.7 published the macOS wheel to PyPI successfully but the Linux wheels were rejected with `400 Bad Request` because `manylinux: 'off'` produces bare `linux_x86_64`/`linux_aarch64` platform tags, which PyPI does not accept (PEP 600 requires `manylinux_*` tags). Attempted to fix by adding `--compatibility manylinux_2_38` to the maturin args, but this conflicted with the action's `--manylinux off` — both flags are aliases, causing maturin to fail with `Expected only one platform tag but found 2`. Also aligned `pyproject.toml` and `Cargo.toml` versions (previously `pyproject.toml` was `0.1.0` while Cargo workspace was `0.1.0`; both now bumped together). 3 files changed.
+
+### Changed
+
+- **Added `--compatibility manylinux_2_38`** to Linux matrix `args` (`.github/workflows/pypi.yml`) — intended to set the correct manylinux platform tag, but conflicted with `--manylinux off`.
+- **Version `0.1.0` → `0.7.8`** (`Cargo.toml`, `pyproject.toml`) — aligned PyPI package version with changelog/tag version.
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations. No code changes — CI only.
 
 ---
 

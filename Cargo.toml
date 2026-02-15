@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/photon", "crates/photon-core"]
 
 [workspace.package]
-version = "0.7.8"
+version = "0.7.9"
 edition = "2021"
 authors = ["Philipp Holke <@pgbouncer>"]
 license = "MIT OR Apache-2.0"
