@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.7.7](#077---2026-02-15)** — CI fix: PyPI publish step `PyO3/maturin-action` → `pypa/gh-action-pypi-publish` — maturin-action runs uploads inside Docker, which was failing; the standard PyPI trusted publisher action uses twine directly without Docker
 - **[0.7.6](#076---2026-02-15)** — CI fix: native ARM64 runner (`ubuntu-24.04-arm`) for `aarch64-unknown-linux-gnu` — eliminates cross-compilation; `manylinux_2_28` Docker image (GCC 7.5, glibc 2.28) too old for `ort` prebuilt ONNX Runtime. Also restores aarch64 Linux target in release workflow
 - **[0.7.5](#075---2026-02-15)** — CI fix: `manylinux: auto` → `manylinux: 'off'` for `x86_64-unknown-linux-gnu` PyPI wheel — `ort` prebuilt ONNX Runtime requires glibc 2.38+ (`__isoc23_strtoll`, `__libc_single_threaded`), unavailable in any manylinux Docker image
 - **[0.7.4](#074---2026-02-15)** — CI fix: `manylinux: auto` → `manylinux: 2_28` for `aarch64-unknown-linux-gnu` PyPI wheel — `ring` crate fails to cross-compile with manylinux2014's GCC 4.8 (missing `__ARM_ARCH`)
@@ -52,6 +53,22 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.7.7] - 2026-02-15
+
+### Summary
+
+CI fix — the v0.7.6 PyPI workflow built all 3 wheels successfully but the publish step failed with `The process '/usr/bin/docker' failed with exit code 1`. The `PyO3/maturin-action@v1` action runs `maturin upload` inside a Docker container, which is unnecessary for a simple PyPI upload and was failing to pull the container image. Replaced with `pypa/gh-action-pypi-publish@release/v1`, the standard PyPI trusted publisher action — it uses `twine` directly on the runner without Docker. The existing OIDC trusted publishing setup (`id-token: write` + `environment: pypi`) is fully compatible. 1 file changed, no code changes.
+
+### Changed
+
+- **`PyO3/maturin-action@v1` (upload) → `pypa/gh-action-pypi-publish@release/v1`** (`.github/workflows/pypi.yml`) — the maturin-action wraps all commands in a Docker container, which is needed for building wheels but unnecessary for uploading. The standard `gh-action-pypi-publish` action uploads wheels directly via twine with OIDC trusted publishing, avoiding Docker entirely.
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations. No code changes — CI only.
 
 ---
 

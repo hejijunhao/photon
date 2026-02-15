@@ -56,7 +56,9 @@
       "Bash(gh api:*)",
       "Bash(gh run list:*)",
       "Bash(gh run view:*)",
-      "WebFetch(domain:ort.pyke.io)"
+      "WebFetch(domain:ort.pyke.io)",
+      "Bash(git -C /home/pkhelfried/crimson_sun/Photon log --oneline -3)",
+      "Bash(git -C /home/pkhelfried/crimson_sun/Photon show v0.7.6:.github/workflows/pypi.yml)"
     ]
   }
 }
