@@ -45,7 +45,7 @@ jobs:
         run: pip install maturin
 
       - name: Build wheel
-        run: maturin build --target ${{ matrix.target }} --release --out dist --compatibility manylinux_2_38
+        run: maturin build --target ${{ matrix.target }} --release --out dist --compatibility manylinux_2_39
 
       - uses: actions/upload-artifact@v4
         with:

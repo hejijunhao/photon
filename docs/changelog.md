@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.7.10](#0710---2026-02-15)** — CI fix: `manylinux_2_38` → `manylinux_2_39` — `ort` prebuilt ONNX Runtime links `CXXABI_1.3.15` (GCC 14), which exceeds `manylinux_2_38` baseline (GCC 13)
 - **[0.7.9](#079---2026-02-15)** — CI fix: split Linux PyPI builds into separate job — install maturin via pip and run directly with `--compatibility manylinux_2_38`, bypassing maturin-action's conflicting `--manylinux off` flag
 - **[0.7.8](#078---2026-02-15)** — CI fix (failed): added `--compatibility manylinux_2_38` to maturin args for Linux wheels — but maturin-action also passes `--manylinux off`, and since `--manylinux`/`--compatibility` are aliases, maturin rejects the duplicate: `Expected only one platform tag but found 2`. Also aligned pyproject.toml version with Cargo workspace version
 - **[0.7.7](#077---2026-02-15)** — CI fix: PyPI publish step `PyO3/maturin-action` → `pypa/gh-action-pypi-publish` — maturin-action runs uploads inside Docker, which was failing; the standard PyPI trusted publisher action uses twine directly without Docker
@@ -55,6 +56,23 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.7.10] - 2026-02-15
+
+### Summary
+
+CI fix — v0.7.9 Linux wheels compiled successfully but failed maturin's `manylinux_2_38` compliance check: `libstdc++.so.6 offending versions: CXXABI_1.3.15`. The `ort` prebuilt ONNX Runtime is linked against GCC 14's libstdc++ (`CXXABI_1.3.15`), which is newer than the `manylinux_2_38` baseline (GCC 13, `CXXABI_1.3.14`). Fixed by bumping to `manylinux_2_39` (glibc 2.39, GCC 14) — both `ubuntu-latest` (24.04) and `ubuntu-24.04-arm` runners ship glibc 2.39. 3 files changed, no code changes.
+
+### Changed
+
+- **`--compatibility manylinux_2_38` → `manylinux_2_39`** (`.github/workflows/pypi.yml`) — `CXXABI_1.3.15` (GCC 14) is available in the `manylinux_2_39` baseline but not `manylinux_2_38`.
+- **Version `0.7.9` → `0.7.10`** (`Cargo.toml`, `pyproject.toml`)
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations. No code changes — CI only.
 
 ---
 

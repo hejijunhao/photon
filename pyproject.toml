@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "photon-imager"
-version = "0.7.9"
+version = "0.7.10"
 description = "Fast image processing CLI with AI-powered tagging and embeddings"
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
