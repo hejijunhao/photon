@@ -55,7 +55,8 @@
       "WebFetch(domain:pypi.org)",
       "Bash(gh api:*)",
       "Bash(gh run list:*)",
-      "Bash(gh run view:*)"
+      "Bash(gh run view:*)",
+      "WebFetch(domain:ort.pyke.io)"
     ]
   }
 }

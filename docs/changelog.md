@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.7.6](#076---2026-02-15)** — CI fix: native ARM64 runner (`ubuntu-24.04-arm`) for `aarch64-unknown-linux-gnu` — eliminates cross-compilation; `manylinux_2_28` Docker image (GCC 7.5, glibc 2.28) too old for `ort` prebuilt ONNX Runtime. Also restores aarch64 Linux target in release workflow
 - **[0.7.5](#075---2026-02-15)** — CI fix: `manylinux: auto` → `manylinux: 'off'` for `x86_64-unknown-linux-gnu` PyPI wheel — `ort` prebuilt ONNX Runtime requires glibc 2.38+ (`__isoc23_strtoll`, `__libc_single_threaded`), unavailable in any manylinux Docker image
 - **[0.7.4](#074---2026-02-15)** — CI fix: `manylinux: auto` → `manylinux: 2_28` for `aarch64-unknown-linux-gnu` PyPI wheel — `ring` crate fails to cross-compile with manylinux2014's GCC 4.8 (missing `__ARM_ARCH`)
 - **[0.7.3](#073---2026-02-15)** — CI fix: drop `x86_64-apple-darwin` target — `ort` has no prebuilt ONNX Runtime binaries for Intel Mac cross-compilation. Build matrix reduced to 3 targets
@@ -51,6 +52,23 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.7.6] - 2026-02-15
+
+### Summary
+
+CI fix — the v0.7.5 PyPI workflow failed on `aarch64-unknown-linux-gnu` with the same class of linker errors as the earlier x86_64 failure: `undefined reference to '__libc_single_threaded'` (glibc 2.32+), `std::__throw_bad_array_new_length()` (GCC 12+ libstdc++), and `std::_Sp_make_shared_tag::_S_eq()`. The `manylinux_2_28-cross:aarch64` Docker image ships GCC 7.5.0 and glibc 2.28 — both too old for the `ort` prebuilt ONNX Runtime static library. Unlike x86_64, simply setting `manylinux: 'off'` on an x86_64 runner doesn't work because it still requires cross-compilation. Fixed by switching to GitHub's native ARM64 Linux runner (`ubuntu-24.04-arm`, glibc 2.39) with `manylinux: 'off'` — this eliminates cross-compilation entirely, building natively on ARM64 hardware. Also added `aarch64-unknown-linux-gnu` back to `release.yml` (dropped in v0.7.3 due to cross-compilation issues, now buildable natively). 2 files changed, no code changes.
+
+### Changed
+
+- **`os: ubuntu-latest` → `os: ubuntu-24.04-arm`** + **`manylinux: 2_28` → `manylinux: 'off'`** for `aarch64-unknown-linux-gnu` (`.github/workflows/pypi.yml`) — native ARM64 build on GitHub's arm64 runner eliminates cross-compilation and the manylinux Docker container entirely. The runner has glibc 2.39, satisfying `ort`'s glibc 2.32+ requirement.
+- **Added `aarch64-unknown-linux-gnu` target** (`.github/workflows/release.yml`) — native build on `ubuntu-24.04-arm`, restoring the target that was dropped in v0.7.3.
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations. No code changes — CI only.
 
 ---
 
