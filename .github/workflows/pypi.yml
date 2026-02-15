@@ -18,12 +18,15 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             manylinux: auto
+            args: --release --out dist
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: 'off'
+            args: --release --out dist --compatibility manylinux_2_38
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             manylinux: 'off'
+            args: --release --out dist --compatibility manylinux_2_38
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +34,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
-          args: --release --out dist
+          args: ${{ matrix.args }}
 
       - uses: actions/upload-artifact@v4
         with:
