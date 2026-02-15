@@ -18,6 +18,7 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/photon-imager/"><img src="https://img.shields.io/pypi/v/photon-imager" alt="PyPI"></a>
   <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue" alt="License"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-2021_edition-orange" alt="Rust"></a>
 </p>
@@ -43,8 +44,23 @@ image.jpg ──▶ Photon ──▶ { embedding, tags, metadata, hash, thumbnai
 
 ## Quick Start
 
+### Install via PyPI (easiest)
+
 ```bash
-# Build from source
+pip install photon-imager
+
+# Download the SigLIP model (~350 MB, one-time)
+photon models download
+
+# Process a single image
+photon process photo.jpg
+```
+
+Available for macOS (Apple Silicon) and Linux (x86_64, aarch64).
+
+### Build from source
+
+```bash
 git clone https://github.com/hejijunhao/photon.git
 cd photon
 cargo build --release
@@ -295,6 +311,7 @@ photon/
 │           ├── pipeline/    # Processing stages (decode, metadata, hash, thumbnail)
 │           ├── embedding/   # SigLIP vision encoder (ONNX Runtime)
 │           ├── tagging/     # Zero-shot classification (68K vocabulary)
+│           ├── llm/         # LLM provider abstraction (Ollama, Anthropic, OpenAI, Hyperbolic)
 │           └── output.rs    # JSON/JSONL serialization
 ├── data/vocabulary/         # WordNet nouns + supplemental visual terms
 ├── tests/fixtures/          # Test images
@@ -325,7 +342,7 @@ photon/
 Contributions are welcome. Please open an issue to discuss significant changes before submitting a PR.
 
 ```bash
-cargo test              # Run all tests (120+ across workspace)
+cargo test              # Run all tests (226 across workspace)
 cargo clippy            # Lint
 cargo fmt               # Format
 cargo bench -p photon-core  # Run benchmarks
