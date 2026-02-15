@@ -6,6 +6,7 @@ All notable changes to Photon are documented here.
 
 ## Index
 
+- **[0.7.5](#075---2026-02-15)** — CI fix: `manylinux: auto` → `manylinux: 'off'` for `x86_64-unknown-linux-gnu` PyPI wheel — `ort` prebuilt ONNX Runtime requires glibc 2.38+ (`__isoc23_strtoll`, `__libc_single_threaded`), unavailable in any manylinux Docker image
 - **[0.7.4](#074---2026-02-15)** — CI fix: `manylinux: auto` → `manylinux: 2_28` for `aarch64-unknown-linux-gnu` PyPI wheel — `ring` crate fails to cross-compile with manylinux2014's GCC 4.8 (missing `__ARM_ARCH`)
 - **[0.7.3](#073---2026-02-15)** — CI fix: drop `x86_64-apple-darwin` target — `ort` has no prebuilt ONNX Runtime binaries for Intel Mac cross-compilation. Build matrix reduced to 3 targets
 - **[0.7.2](#072---2026-02-15)** — CI fix: `ort` TLS backend `tls-native` → `tls-rustls` (eliminates `openssl-sys` from entire dep tree), `macos-13` → `macos-14` cross-compilation for x86_64-apple-darwin
@@ -50,6 +51,22 @@ All notable changes to Photon are documented here.
 - **[0.3.0](#030---2026-02-09)** — SigLIP embedding: ONNX Runtime integration, 768-dim vector generation
 - **[0.2.0](#020---2026-02-09)** — Image processing pipeline: decode, EXIF, hashing, thumbnails
 - **[0.1.0](#010---2026-02-09)** — Project foundation: CLI, configuration, logging, error handling
+
+---
+
+## [0.7.5] - 2026-02-15
+
+### Summary
+
+CI fix — the v0.7.4 PyPI workflow failed on `x86_64-unknown-linux-gnu` with linker errors: `undefined symbol: __isoc23_strtoll`, `__isoc23_strtoull`, `__isoc23_strtol` (glibc 2.38+), `__libc_single_threaded` (glibc 2.32+), and `std::__throw_bad_array_new_length()` (GCC 12+ libstdc++). The `ort` prebuilt ONNX Runtime static library (`libort_sys`) was compiled against glibc 2.38+, but the `manylinux: auto` Docker container (manylinux2014, glibc 2.17) doesn't provide these symbols. The newest official manylinux image (`manylinux_2_28`, glibc 2.28) is also insufficient. Fixed by switching to `manylinux: 'off'` for x86_64, which builds directly on the `ubuntu-latest` runner (glibc 2.39) without Docker. Maturin auto-detects the minimum glibc requirement and tags the wheel accordingly. The resulting x86_64 wheel requires a modern Linux (Ubuntu 24.04+, Fedora 39+, Debian 13+). The `aarch64-unknown-linux-gnu` target remains on `manylinux: 2_28` (its prebuilt ONNX Runtime doesn't require the newer symbols). 1 file changed, no code changes.
+
+### Changed
+
+- **`manylinux: auto` → `manylinux: 'off'`** for `x86_64-unknown-linux-gnu` (`.github/workflows/pypi.yml`) — bypasses the manylinux Docker container entirely, building natively on `ubuntu-latest` (glibc 2.39). The `ort` prebuilt ONNX Runtime for x86_64 links against glibc 2.38+ symbols (`__isoc23_strtoll`, `__libc_single_threaded`) that no manylinux Docker image provides.
+
+### Tests
+
+226 tests passing (40 CLI + 166 core + 20 integration), zero clippy warnings, zero formatting violations. No code changes — CI only.
 
 ---
 
