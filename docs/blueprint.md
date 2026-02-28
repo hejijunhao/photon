@@ -1,306 +1,415 @@
-# Photon: Architecture Blueprint
+# Photon — Architecture & Product Blueprint
 
-> Pure image processing pipeline for AI-powered tagging and embeddings
-
-## Executive Summary
-
-Photon is an open-source, embeddable image processing engine. It takes images as input and outputs structured data: vector embeddings, semantic tags, metadata, and descriptions. **Photon does not manage a database** — it's a pure processing pipeline that outputs data for your backend to store and search however you choose.
-
-**Key Design Decisions:**
-- **Rust** for performance and single-binary distribution
-- **Pure pipeline** — no database, just input → output
-- **SigLIP** for embeddings (bundled, runs locally via ONNX)
-- **BYOK** for LLMs (Ollama, Hyperbolic, Anthropic, OpenAI)
-- **Apple Silicon optimized** (Metal acceleration)
+> AI-powered image processing pipeline. Pure Rust. Single binary. No Python runtime, no Docker, no cloud dependency.
 
 ---
 
-## Architecture Overview
+## What Is Photon?
+
+Photon is an open-source image processing engine that takes images as input and outputs structured, AI-enriched data: **vector embeddings**, **semantic tags**, **metadata**, **perceptual hashes**, **thumbnails**, and optional **LLM-generated descriptions** — all as clean JSON.
+
+It is not a database. It is not a search engine. It is not a web service. Photon is a **pure processing pipeline** — a single binary you point at images, and it emits structured data for your backend to store, index, and search however you choose.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                           PHOTON                                 │
-│                  Pure Image Processing Pipeline                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   INPUT                           OUTPUT                        │
-│   ─────                           ──────                        │
-│   Image file(s)          →        Structured data (JSON):       │
-│   - jpg, png, webp                - embedding vector [768]      │
-│   - heic, raw formats             - semantic tags + confidence  │
-│   - batch directories             - EXIF metadata               │
-│                                   - description (via LLM)       │
-│                                   - content hash                │
-│                                   - thumbnail (optional)        │
-│                                                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌───────────┐   ┌───────────┐   ┌───────────┐                │
-│   │  Decode   │──▶│  Extract  │──▶│   Embed   │                │
-│   │  Image    │   │  Metadata │   │  (SigLIP) │                │
-│   └───────────┘   └───────────┘   └───────────┘                │
-│         │               │               │                       │
-│         ▼               ▼               ▼                       │
-│   ┌───────────┐   ┌───────────┐   ┌───────────┐                │
-│   │ Thumbnail │   │   EXIF    │   │  Vector   │                │
-│   │  (WebP)   │   │   JSON    │   │  [768]    │                │
-│   └───────────┘   └───────────┘   └───────────┘                │
-│                                         │                       │
-│                         ┌───────────────┴───────────────┐       │
-│                         ▼                               ▼       │
-│                   ┌───────────┐                 ┌───────────┐   │
-│                   │Zero-Shot  │                 │    LLM    │   │
-│                   │  Tags     │                 │Description│   │
-│                   │ (SigLIP)  │                 │  (BYOK)   │   │
-│                   └───────────┘                 └───────────┘   │
-│                                                                 │
-│         ════════════ Bounded Channels ════════════              │
-│         (Backpressure between stages prevents OOM)              │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼ JSON output
-                    ┌─────────────────────┐
-                    │    YOUR BACKEND     │
-                    │                     │
-                    │  - Store in any DB  │
-                    │  - Index vectors    │
-                    │  - Build your search│
-                    │  - Your API/UI      │
-                    └─────────────────────┘
+                    ┌──────────────────────────────────────────────┐
+   Image files      │                  PHOTON                      │        Structured JSON
+   ─────────── ───▶ │  Decode → EXIF → Hash → Embed → Tag → [LLM] │ ───▶  ────────────────
+   jpg, png,        │         Pure Processing Pipeline             │        embeddings, tags,
+   webp, heic       └──────────────────────────────────────────────┘        metadata, hashes,
+                                                                            thumbnails, descriptions
+                                         │
+                                         ▼
+                               ┌───────────────────┐
+                               │   YOUR BACKEND    │
+                               │                   │
+                               │  pgvector, Qdrant │
+                               │  Pinecone, custom │
+                               └───────────────────┘
 ```
+
+### Why Photon Exists
+
+Teams accumulate thousands of images across folders, drives, and cloud storage. Finding the right photo means scrolling, guessing filenames, or relying on manual tags. Photon solves this by processing every image through a local AI pipeline that understands what's in the photo — not just its filename.
+
+A photo of red sneakers gets tagged with `sneakers`, `footwear`, `red`, `fashion`, `product photography`. Search for any of those terms and it surfaces. The 768-dimensional embedding vector enables semantic similarity search: find photos _like_ this one, even if no tags overlap.
 
 ---
 
-## Technology Stack
+## Core Design Principles
 
-| Component | Choice | Why |
-|-----------|--------|-----|
-| Language | **Rust** | Memory safety, ONNX bindings, single static binary, no GC |
-| Embedding Model | **SigLIP** | Newer than CLIP, better performance, bundled via ONNX |
-| ML Runtime | **ONNX Runtime** | Run models natively without Python, Metal support |
-| LLM Integration | **BYOK** | Ollama (local), Hyperbolic (hosted), Anthropic/OpenAI (commercial) |
-| Target Hardware | **Apple Silicon** | M1-M4 with Metal acceleration |
-
-### Core Dependencies
-
-```toml
-[dependencies]
-tokio = { version = "1", features = ["full"] }  # Async runtime
-clap = { version = "4", features = ["derive"] }  # CLI
-image = "0.25"                    # Image decoding
-kamadak-exif = "0.5"              # EXIF extraction
-blake3 = "1"                      # Content hashing
-image_hasher = "2"                # Perceptual hashing
-ort = "2"                         # ONNX Runtime (SigLIP)
-reqwest = { version = "0.12", features = ["json"] }  # HTTP for LLM APIs
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tracing = "0.1"                   # Structured logging
-tracing-subscriber = "0.3"
-rayon = "1.10"                    # Parallel processing
-```
-
-**Note:** No database dependencies. Photon is a pure processing pipeline.
+| Principle | What It Means |
+|---|---|
+| **Pure pipeline** | No database, no state management, no API server. Input images, output JSON. Your backend owns storage and search. |
+| **Single binary** | One executable. No Python runtime, no Docker container, no system dependencies. Download and run. |
+| **Local-first AI** | SigLIP runs entirely on-device via ONNX Runtime. No cloud calls for embeddings or tags. Your images never leave your machine. |
+| **BYOK for LLMs** | Bring Your Own Key. Descriptions are optional and use whichever LLM provider you prefer — local (Ollama) or commercial (Anthropic, OpenAI, Hyperbolic). |
+| **Embeddable** | The core library (`photon-core`) is a standalone Rust crate. Import it into your own Rust project and call it directly — no CLI needed. |
 
 ---
 
-## Project Structure
+## Architecture
+
+### Workspace Structure
+
+Photon is a Rust workspace with two crates:
 
 ```
 photon/
-├── Cargo.toml                    # Workspace manifest
 ├── crates/
-│   ├── photon/                   # CLI binary
+│   ├── photon-core/          # Embeddable library (~7,000 lines)
 │   │   └── src/
-│   │       ├── main.rs
-│   │       └── cli/
-│   │           ├── process.rs    # Main processing command
-│   │           ├── config.rs     # Configuration management
-│   │           └── models.rs     # Model download/management
+│   │       ├── lib.rs            # Public API surface
+│   │       ├── config/           # Layered configuration system
+│   │       ├── pipeline/         # Processing stages (decode, hash, metadata, thumbnail)
+│   │       ├── embedding/        # SigLIP visual encoder (ONNX Runtime)
+│   │       ├── tagging/          # Zero-shot classification (~2,800 lines, 10 files)
+│   │       ├── llm/              # BYOK provider abstraction (4 providers)
+│   │       ├── output.rs         # JSON/JSONL streaming writer
+│   │       ├── types.rs          # ProcessedImage, Tag, OutputRecord
+│   │       └── error.rs          # Per-stage error types with recovery hints
 │   │
-│   └── photon-core/              # Embeddable library
+│   └── photon/               # CLI binary (~1,400 lines)
 │       └── src/
-│           ├── lib.rs            # Public API
-│           ├── config.rs         # Configuration types
-│           ├── error.rs          # Error types (per-stage)
-│           │
-│           ├── pipeline/         # Image processing pipeline
-│           │   ├── mod.rs        # Pipeline orchestration
-│           │   ├── decode.rs     # Image decoding (all formats)
-│           │   ├── metadata.rs   # EXIF extraction
-│           │   ├── hash.rs       # Content + perceptual hashing
-│           │   ├── thumbnail.rs  # Thumbnail generation
-│           │   └── channel.rs    # Bounded channels (backpressure)
-│           │
-│           ├── embedding/        # SigLIP embedding generation
-│           │   ├── mod.rs
-│           │   ├── siglip.rs     # ONNX model inference
-│           │   └── preprocess.rs # Image normalization
-│           │
-│           ├── tagging/          # Tag generation
-│           │   ├── mod.rs
-│           │   ├── zero_shot.rs  # SigLIP zero-shot classification
-│           │   └── taxonomy.rs   # Tag vocabulary
-│           │
-│           ├── llm/              # LLM provider abstraction (BYOK)
-│           │   ├── mod.rs        # Provider trait
-│           │   ├── ollama.rs     # Local models
-│           │   ├── hyperbolic.rs # Self-hosted cloud
-│           │   ├── anthropic.rs  # Commercial API
-│           │   └── openai.rs     # Commercial API
-│           │
-│           └── output.rs         # Output formatting (JSON, JSONL)
+│           ├── main.rs
+│           └── cli/
+│               ├── process/      # Batch processing, dual-stream output
+│               ├── interactive/  # Guided wizard (bare `photon` invocation)
+│               ├── models.rs     # Model download with BLAKE3 verification
+│               └── config.rs     # Config init/show/path
 │
-├── models/                       # ONNX models (downloaded on first run)
-│   └── siglip-base-patch16/
-│       ├── visual.onnx
-│       └── textual.onnx
-│
-├── docs/
-│   ├── vision.md
-│   └── blueprint.md              # This file
-│
-└── tests/
-    ├── integration/
-    └── fixtures/
-        └── images/
+├── data/vocabulary/          # WordNet nouns + supplemental terms (source)
+├── tests/fixtures/images/    # Test images (dog.jpg, beach.jpg, car.jpg, test.png)
+└── pyproject.toml            # maturin config for PyPI binary distribution
+```
+
+### Public API
+
+The library exposes a focused surface through `photon-core`:
+
+```rust
+pub use config::Config;
+pub use embedding::EmbeddingEngine;
+pub use error::{PhotonError, PipelineError, ConfigError};
+pub use output::{OutputFormat, OutputWriter};
+pub use pipeline::{ImageProcessor, ProcessOptions};
+pub use types::{ProcessedImage, ExifData, Tag, EnrichmentPatch, OutputRecord};
+```
+
+`ImageProcessor` is the main entry point. It holds optional components via `Arc<Option<...>>` — the processor works without embedding or tagging models loaded, producing metadata-only output. Components are loaded separately via `load_embedding()` and `load_tagging()`, keeping construction sync and infallible.
+
+---
+
+## The Processing Pipeline
+
+Every image passes through a sequential pipeline of independent stages. Each stage is a separate module, independently testable, and individually skippable via `ProcessOptions`.
+
+```
+┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
+│ Validate │──▶│  Decode  │──▶│   EXIF   │──▶│   Hash   │──▶│Thumbnail │──▶│  Embed   │──▶│   Tag    │
+│          │   │          │   │          │   │          │   │          │   │ (SigLIP) │   │ (SigLIP) │
+└──────────┘   └──────────┘   └──────────┘   └──────────┘   └──────────┘   └──────────┘   └──────────┘
+     │              │              │              │              │              │              │
+     ▼              ▼              ▼              ▼              ▼              ▼              ▼
+  Magic byte    DynamicImage   ExifData      BLAKE3 hash    WebP base64   768-dim vec    Scored tags
+  validation    + dimensions   (camera,      + perceptual   thumbnail     (L2-normed)   with hierarchy
+  + size check                 GPS, ISO)     hash (pHash)                               paths
+```
+
+### Stage Details
+
+| Stage | What It Does | Output |
+|---|---|---|
+| **Validate** | Checks file existence, size limits, and magic bytes (JPEG `FF D8 FF`, PNG `89 50 4E 47`, WebP `RIFF...WEBP`, GIF, TIFF, HEIC/AVIF). Rejects bad files before wasting decode time. | Pass/fail |
+| **Decode** | Decodes the image from in-memory bytes (single read — bytes are reused for hashing). Enforces dimension limits and decode timeout. | `DynamicImage`, format, dimensions |
+| **EXIF** | Extracts metadata leniently — returns partial data if some fields are missing. Captures timestamp, camera make/model, GPS coordinates, ISO, aperture, shutter speed, focal length, orientation. | `ExifData` (optional) |
+| **Hash** | BLAKE3 content hash for exact deduplication. DoubleGradient perceptual hash (16x16, base64-encoded) for near-duplicate detection via Hamming distance. | `content_hash`, `perceptual_hash` |
+| **Thumbnail** | Generates a WebP thumbnail at configurable size (default 256px). Base64-encoded for embedding directly in JSON output. | Base64 string |
+| **Embed** | Runs the image through SigLIP's visual encoder via ONNX Runtime. Preprocesses to model resolution (224x224 or 384x384), normalizes to [-1, 1], outputs a 768-dimensional L2-normalized embedding vector. | `Vec<f32>` (768 dims) |
+| **Tag** | Scores the image embedding against a vocabulary of ~68,000 terms. Applies SigLIP sigmoid scaling, hierarchy deduplication, and optional path annotation. | `Vec<Tag>` |
+
+### Single-Read I/O
+
+Photon reads each file exactly once. The raw bytes feed both the BLAKE3 content hash and the image decoder — no second disk read. This matters at scale: processing thousands of images, eliminating redundant I/O adds up.
+
+### Async Timeout Pattern
+
+CPU-heavy stages (decode, embedding) run inside `tokio::task::spawn_blocking` wrapped in `tokio::time::timeout`. This prevents a single slow or corrupt image from blocking the async runtime while still enforcing configurable time limits:
+
+```rust
+tokio::time::timeout(duration, tokio::task::spawn_blocking(|| {
+    // CPU-heavy ONNX inference or image decode
+}))
 ```
 
 ---
 
-## Pipeline Reliability
+## SigLIP Embedding Engine
 
-### Parallel Processing
+Photon uses Google's **SigLIP** (Sigmoid Language-Image Pre-training) model for both image embeddings and zero-shot tagging. SigLIP is the successor to CLIP, with better zero-shot classification accuracy and cleaner cross-modal alignment.
 
-Images are processed in parallel using a configurable worker pool:
+### How It Works
+
+1. **Preprocessing**: Resize to model resolution using Lanczos3 interpolation, convert to RGB, normalize pixels to [-1, 1] via `(pixel/255 - 0.5) / 0.5`, arrange in NCHW tensor layout.
+2. **Inference**: Run through ONNX Runtime session. Extract `pooler_output` (the 2nd output tensor — critically, _not_ `last_hidden_state`, which is misaligned across vision and text modalities).
+3. **Normalization**: L2-normalize the 768-dim output vector.
+
+### Two Model Variants
+
+| Variant | Resolution | Speed | Use Case |
+|---|---|---|---|
+| `siglip-base-patch16` (default) | 224×224 | Fast | General processing, batch jobs |
+| `siglip-base-patch16-384` | 384×384 | ~3-4× slower | Higher detail, fine-grained classification |
+
+Selected via `--quality fast` (default) or `--quality high`.
+
+### Performance Optimization
+
+The preprocessing step converts a `DynamicImage` (~49MB for a 4K photo) into a compact float tensor (~600KB for 224×224×3×f32). This preprocessing happens _outside_ `spawn_blocking`, so only the small tensor crosses the thread boundary — not the full image.
+
+### Batch Embedding
+
+`embed_batch()` stacks multiple preprocessed tensors into a single `[N, 3, H, W]` input, amortizing ONNX dispatch overhead across images. The ONNX session is behind a `Mutex` (required by `ort`'s API), so batch calls reduce lock contention.
+
+---
+
+## Zero-Shot Tagging System
+
+The tagging subsystem is the most technically sophisticated part of Photon — approximately 2,800 lines across 10 files. It transforms raw embedding vectors into human-readable semantic tags using SigLIP's cross-modal capabilities, a 68,000-term vocabulary, and a self-organizing relevance system.
+
+### The Core Idea
+
+SigLIP was trained so that image embeddings and text embeddings of matching concepts land near each other in the same 768-dimensional space. Photon exploits this by pre-encoding a large vocabulary of text descriptions into embeddings, then scoring each image against the entire vocabulary via dot product.
+
+```
+Image embedding (768-dim)  ×  Vocabulary matrix (68K × 768)  =  68K confidence scores
+```
+
+The raw cosine similarity is converted to a meaningful confidence via SigLIP's learned sigmoid scaling:
+
+```
+logit = 117.33 × cosine_similarity + (−12.93)
+confidence = sigmoid(logit) = 1 / (1 + e^(−logit))
+```
+
+The constants `117.33` and `−12.93` are derived from SigLIP's training — they calibrate the raw cosine into a probability that the image actually depicts the concept.
+
+### Vocabulary: 68,000+ Visual Terms
+
+The vocabulary combines two sources:
+
+- **~68,000 WordNet nouns** — the full noun hierarchy from Princeton's WordNet lexical database. Each term carries its synset ID and full hypernym chain (ancestor lineage). Format: `labrador_retriever → retriever → sporting_dog → dog → canine → mammal → ...`
+- **~260 supplemental terms** — scenes, moods, styles, weather, and temporal concepts not covered by WordNet nouns: `sunset`, `vintage`, `aerial view`, `rainy`, `minimalist`, etc. Categorized into scene, mood, style, weather, time, activity, color, and composition.
+
+### Label Bank: Pre-Computed Text Embeddings
+
+The vocabulary is pre-encoded into a flat N×768 matrix (`label_bank.bin`, ~209MB) stored at `~/.photon/taxonomy/`. Each row is the SigLIP text embedding for the prompt `"a photo of a {term}"`.
+
+**Cache invalidation**: A sidecar file (`label_bank.meta`) stores a BLAKE3 hash of the vocabulary content. If the vocabulary changes — even by a single term — the hash changes and the label bank is automatically rebuilt.
+
+Scoring an image against 68,000 terms reduces to a single matrix-vector multiply. On macOS, this dispatches to Apple's Accelerate framework via BLAS, executing as an optimized `sgemv` call.
+
+### Progressive Encoding: Cold Start in 30 Seconds
+
+Encoding 68,000 terms through SigLIP's text encoder takes approximately 90 minutes on first run. Photon solves this with a two-stage progressive encoding strategy:
+
+**Stage 1 — Seed encoding (~30 seconds, synchronous):**
+A `SeedSelector` picks ~2,000 high-value terms: all supplemental terms first (scenes, moods, styles are inherently high visual relevance), then curated seed terms from a hand-picked list, then deterministic random fill from remaining WordNet nouns. These are encoded synchronously, and image processing begins immediately with this partial vocabulary.
+
+**Stage 2 — Background encoding (asynchronous):**
+A tokio background task encodes the remaining ~66,000 terms in chunks of 5,000. After each chunk completes:
+1. The new embeddings are appended to the running label bank (incremental — O(N) total work).
+2. A new `TagScorer` is constructed with the expanded vocabulary.
+3. The scorer is atomically swapped into the shared `Arc<RwLock<TagScorer>>`.
+
+Images being processed always use the best available scorer. Early images get tags from ~2,000 terms; later images benefit from the full 68,000. The label bank is cached to disk on completion — subsequent runs load instantly.
+
+### Self-Organizing Vocabulary: Three-Pool Relevance Tracking
+
+Not all 68,000 terms are equally useful for a given image collection. A dataset of product photos will never trigger `glacier` or `tundra`. Photon's `RelevanceTracker` adapts the vocabulary to the data by organizing terms into three pools:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    VOCABULARY POOLS                              │
+│                                                                 │
+│  ┌─────────┐        ┌─────────┐        ┌─────────┐             │
+│  │ ACTIVE  │ ─────▶ │  WARM   │ ─────▶ │  COLD   │             │
+│  │ (~2K)   │ demote │ (sample)│ demote │ (rest)  │             │
+│  │ scored  │        │ scored  │        │ not     │             │
+│  │ every   │ ◀───── │ every   │ ◀───── │ scored  │             │
+│  │ image   │promote │ Nth img │promote │         │             │
+│  └─────────┘        └─────────┘        └─────────┘             │
+│                                              ▲                  │
+│                                              │                  │
+│                                    neighbor expansion           │
+│                                    (WordNet siblings)           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| Pool | Behavior | Purpose |
+|---|---|---|
+| **Active** | Scored against every image | The hot path — terms that matter for this dataset |
+| **Warm** | Scored every Nth image (sampling) | Candidates being evaluated for promotion |
+| **Cold** | Not scored at all | Dormant terms, promoted only via neighbor expansion |
+
+**Pool transitions** happen during periodic sweeps (every ~1,000 images):
+
+- **Active → Warm**: Term hasn't matched any image in 90 days, or never matched after 1,000 images processed.
+- **Warm → Active**: Term's average confidence exceeds the promotion threshold (default 0.3).
+- **Warm → Cold**: 50 consecutive sampling checks with no match.
+- **Cold → Warm**: Triggered by **neighbor expansion** — when a term is promoted to Active, its WordNet siblings (terms sharing the same parent hypernym) are promoted to Warm for evaluation.
+
+This means the vocabulary self-organizes: after processing a batch of dog photos, `labrador retriever` gets promoted to Active, which triggers `golden retriever`, `poodle`, and other retriever breeds to enter the Warm pool. Meanwhile, `submarine` and `telescope` quietly demote to Cold.
+
+Each term tracks per-term statistics: hit count, running score sum, last hit timestamp, and warm checks without hit. Precomputed index lists ensure scoring iterates only relevant terms — not all 68,000.
+
+### Hierarchy Deduplication
+
+When both `dog` and `animal` score above threshold, reporting both is redundant. Photon's `HierarchyDedup` suppresses ancestor tags when more specific descendants are present, using WordNet's hypernym chains.
+
+If the tags `labrador retriever` (0.92), `dog` (0.85), and `animal` (0.71) all score, only `labrador retriever` survives — it's the most specific term in the chain. Overly generic ancestors like `entity`, `physical_entity`, `object`, and `organism` are always filtered.
+
+**Optional path annotation** shows the surviving tag's lineage:
+
+```json
+{ "name": "labrador retriever", "confidence": 0.92, "path": "canine > retriever > labrador retriever" }
+```
+
+---
+
+## LLM Integration (BYOK)
+
+Photon supports optional image descriptions via external LLM providers. This is strictly BYOK (Bring Your Own Key) — Photon never bundles or requires a specific LLM.
+
+### Supported Providers
+
+| Provider | Type | Endpoint | Auth |
+|---|---|---|---|
+| **Ollama** | Local | `localhost:11434` | None |
+| **Anthropic** | Commercial | `api.anthropic.com` | API key |
+| **OpenAI** | Commercial | `api.openai.com` | API key |
+| **Hyperbolic** | Self-hosted cloud | Configurable | API key |
+
+All providers implement a common `LlmProvider` trait with `generate()`, `is_available()`, and `timeout()` methods. A factory creates the right provider from config + CLI flags, with `${ENV_VAR}` expansion for API keys.
+
+### Tag-Aware Prompts
+
+LLM requests include the zero-shot tags in the prompt, giving the LLM context about what Photon already detected. This produces more focused, accurate descriptions rather than generic "I see an image" responses.
+
+### Dual-Stream Output
+
+When LLM enrichment is active, Photon uses a dual-stream output model to avoid blocking the fast pipeline on slow LLM calls:
+
+```
+Stream 1 (immediate):   Core records — embeddings, tags, metadata, hashes
+Stream 2 (async):       Enrichment patches — LLM descriptions, keyed by content_hash
+```
+
+**Core records** (`OutputRecord::Core`) emit at full pipeline speed. **Enrichment patches** (`OutputRecord::Enrichment`) follow asynchronously as LLM calls complete, cross-referenced by `content_hash` for client-side joining. In JSONL mode, this enables true real-time streaming — your backend starts receiving and indexing results before the LLM has finished.
+
+### Resilient Execution
+
+- **Concurrent calls**: Bounded by a semaphore (default 4 parallel, max 8) to avoid overwhelming providers.
+- **Structured retry**: Classifies errors by HTTP status code (429/5xx retryable, 401/403 not), falls back to message substring matching for connection errors. Exponential backoff capped at 30 seconds.
+- **Per-request timeout**: Configurable (default 60s). A slow LLM response doesn't stall the pipeline.
+- **File size guard**: Skips enrichment for images exceeding the configured max file size.
+
+---
+
+## Batch Processing
+
+Photon is designed for batch processing of large image collections, not just single files.
+
+### Concurrent Pipeline
+
+Images are processed concurrently via `futures::stream::buffer_unordered(parallel)`. While one image waits for the ONNX mutex (embedding inference), others decode, hash, and generate thumbnails on the blocking thread pool. The `--parallel` flag controls concurrency (default 4).
+
+### Skip-Existing Pre-Filter
+
+The `--skip-existing` flag enables incremental processing. Before entering the concurrent pipeline, Photon pre-filters the file list by matching `(path, file_size)` tuples against already-processed entries in the output file — zero I/O, no hashing required. Only new or changed files enter the pipeline.
+
+### Streaming Output
+
+| Output Mode | Behavior |
+|---|---|
+| JSONL to file | Core records stream immediately per-image; enrichment patches append after LLM completes |
+| JSONL to stdout | Core records stream in real-time for piping to other tools |
+| JSON to file | Collects all results, merges with existing if `--skip-existing`, writes array |
+| JSON to stdout | Collects all results, emits as pretty-printed array |
+
+### Progress & Summary
+
+Batch processing displays a real-time progress bar (via `indicatif`) showing elapsed time, completion percentage, and current throughput in images/second. After completion, a summary table reports succeeded, failed, skipped counts, total duration, and throughput in both images/sec and MB/sec.
+
+---
+
+## CLI Interface
+
+### Commands
 
 ```bash
-photon process ./photos/ --parallel 8  # 8 workers
+# Process a single image (JSON to stdout)
+photon process photo.jpg
+
+# Process a directory (JSONL to file, 8 parallel workers)
+photon process ./photos/ -o results.jsonl -f jsonl -p 8
+
+# High-quality mode (384px SigLIP model)
+photon process photo.jpg --quality high
+
+# With LLM descriptions
+photon process photo.jpg --llm anthropic --llm-model claude-sonnet-4-20250514
+
+# Incremental processing (skip already-processed images)
+photon process ./photos/ -o results.jsonl --skip-existing
+
+# Selective output
+photon process photo.jpg --no-thumbnail --no-embedding
+
+# Show hierarchy paths in tags
+photon process photo.jpg --show-tag-paths
+
+# Stream for piping to your backend
+photon process ./photos/ -f jsonl | your-ingestion-script
+
+# Model management
+photon models download     # Download SigLIP models + vocabulary
+photon models list         # Show installed models with sizes
+photon models path         # Print model directory
+
+# Configuration
+photon config show         # Display current config (TOML)
+photon config init         # Create default config file
+photon config path         # Print config file location
 ```
 
-Each worker processes images end-to-end (decode → embed → output). This keeps implementation simple while utilizing available CPU/GPU resources.
+### Interactive Wizard
 
-### Backpressure
+Invoking `photon` with no arguments on a TTY launches a guided interactive wizard:
 
-Bounded channels between pipeline stages prevent memory exhaustion when processing large batches:
+1. **Main menu**: Process images, download models, configure settings, or exit.
+2. **Guided processing**: Step-by-step walkthrough — select input path, verify models are installed, choose quality preset, configure LLM provider (with masked API key entry and option to save to config), select output format and destination, review summary, and process.
+3. **Model management**: Visual status indicators (green checkmarks / red crosses) for each model component, with targeted download options.
+4. **Settings viewer**: Summary of all configuration with option to view full TOML.
 
-```
-Decode (fast) ──[buffer: 100]──▶ Embed (slow) ──[buffer: 100]──▶ Output
-```
-
-If embedding is slower than decoding, the decode stage blocks once the buffer fills, preventing unbounded memory growth.
-
-```toml
-[pipeline]
-buffer_size = 100  # Max images buffered between stages
-```
-
-### Retry Strategy
-
-Transient failures (network timeouts, temporary API errors) are retried with a simple fixed-delay strategy:
-
-```toml
-[pipeline]
-retry_attempts = 3      # Max retries per image
-retry_delay_ms = 1000   # Wait 1 second between retries
-```
-
-If all retries fail, the image is marked as failed, logged, and processing continues with the next image.
-
-### Failure Handling
-
-Each image either **fully succeeds** or **fully fails** — no partial state. Failures are logged with context:
-
-```
-[ERROR] Failed: /photos/corrupt.jpg - stage: decode - invalid JPEG header
-[ERROR] Failed: /photos/large.png - stage: embed - timeout after 5000ms
-```
-
-At the end of processing, a summary is printed:
-
-```
-[INFO] Completed: 998 succeeded, 2 failed (45.2 img/sec)
-```
-
-### Skip Already-Processed Images
-
-When re-running on a folder, use `--skip-existing` to avoid reprocessing:
-
-```bash
-photon process ./photos/ --output results.jsonl --skip-existing
-```
-
-This reads `results.jsonl` and skips any images whose `content_hash` is already present. Useful for incremental processing.
-
-### Input Limits
-
-Guard against problematic files that could slow down or crash the pipeline:
-
-```toml
-[limits]
-max_file_size_mb = 100       # Skip files larger than 100MB
-max_image_dimension = 10000  # Skip images wider/taller than 10000px
-decode_timeout_ms = 5000     # Fail decode if it takes > 5 seconds
-embed_timeout_ms = 30000     # Fail embedding if it takes > 30 seconds
-llm_timeout_ms = 60000       # Fail LLM call if it takes > 60 seconds
-```
+The wizard uses a custom color theme with cyan prompts, green success indicators, and box-drawing characters for the banner.
 
 ---
 
 ## Output Format
 
-### Rust Struct
-
-```rust
-pub struct ProcessedImage {
-    // File identification
-    pub file_path: PathBuf,
-    pub file_name: String,
-    pub content_hash: String,         // blake3 hash for deduplication
-
-    // Image properties
-    pub width: u32,
-    pub height: u32,
-    pub format: String,               // "jpeg", "png", "webp", etc.
-    pub file_size: u64,
-
-    // Vector embedding (main output for semantic search)
-    pub embedding: Vec<f32>,          // 768 floats (SigLIP)
-
-    // Metadata
-    pub exif: Option<ExifData>,
-
-    // AI-generated content
-    pub tags: Vec<Tag>,
-    pub description: Option<String>,  // If LLM enabled
-
-    // Optional outputs
-    pub thumbnail: Option<Vec<u8>>,   // WebP bytes, base64 in JSON
-    pub perceptual_hash: Option<String>,
-}
-
-pub struct Tag {
-    pub name: String,
-    pub confidence: f32,              // 0.0 to 1.0
-    pub category: Option<String>,     // "object", "scene", "color", "style"
-}
-```
-
-### JSON Output
+Every processed image produces a `ProcessedImage` struct serialized to JSON:
 
 ```json
 {
   "file_path": "/photos/vacation/beach.jpg",
   "file_name": "beach.jpg",
-  "content_hash": "a7f3b2c1d4e5f6a8b9c0d1e2f3...",
+  "content_hash": "a7f3b2c1d4e5f6...",
   "width": 4032,
   "height": 3024,
   "format": "jpeg",
   "file_size": 2458624,
 
-  "embedding": [0.023, -0.156, 0.089, ...],
+  "embedding": [0.023, -0.156, 0.089, "... 768 floats"],
 
   "exif": {
     "captured_at": "2024-07-15T14:32:00Z",
@@ -309,413 +418,234 @@ pub struct Tag {
     "gps_latitude": 25.7617,
     "gps_longitude": -80.1918,
     "iso": 50,
-    "aperture": "f/1.8"
+    "aperture": "f/1.8",
+    "focal_length": "6.765mm",
+    "shutter_speed": "1/1000"
   },
 
   "tags": [
     { "name": "beach", "confidence": 0.94, "category": "scene" },
-    { "name": "ocean", "confidence": 0.87, "category": "scene" },
+    { "name": "ocean", "confidence": 0.87 },
     { "name": "tropical", "confidence": 0.76, "category": "style" },
-    { "name": "blue", "confidence": 0.82, "category": "color" }
+    { "name": "palm tree", "confidence": 0.71 }
   ],
 
-  "description": "A sandy tropical beach with turquoise water and palm trees swaying in the breeze. The scene captures a serene vacation atmosphere.",
+  "description": "A sandy tropical beach with turquoise water and palm trees. The scene captures a serene vacation atmosphere with clear skies.",
 
   "thumbnail": "base64-encoded-webp-bytes...",
   "perceptual_hash": "d4c3b2a1e5f6..."
 }
 ```
 
----
+When LLM enrichment is active with JSONL output, enrichment patches follow as separate records:
 
-## CLI Interface
-
-```bash
-# Process single image → JSON to stdout
-photon process image.jpg
-
-# Process directory → JSON Lines to file
-photon process ./photos/ --output results.jsonl
-
-# Stream for piping to your backend
-photon process ./photos/ --format jsonl | your-ingestion-script
-
-# Skip already-processed images (reads output file to check hashes)
-photon process ./photos/ --output results.jsonl --skip-existing
-
-# Control outputs
-photon process image.jpg --no-thumbnail
-photon process image.jpg --no-description
-photon process image.jpg --thumbnail-size 256
-
-# Use LLM for descriptions (BYOK)
-photon process image.jpg --llm ollama --llm-model llama3.2-vision
-photon process image.jpg --llm hyperbolic --llm-model meta-llama/Llama-3.2-11B-Vision-Instruct
-photon process image.jpg --llm anthropic --llm-model claude-sonnet-4-20250514
-
-# Batch processing with parallelism
-photon process ./photos/ --parallel 8
-
-# Verbose logging (debug info)
-photon process ./photos/ --verbose
-
-# Model management
-photon models download          # Download SigLIP model
-photon models list              # Show installed models
-photon models path              # Show model directory
-
-# Configuration
-photon config show              # Display current config
-photon config path              # Show config file location
-```
-
----
-
-## Model Strategy
-
-### Two Types of Models
-
-| Type | Purpose | Distribution | User Choice |
-|------|---------|--------------|-------------|
-| **Embedding (SigLIP)** | Image → vector for similarity search | Downloaded on first run (~350MB) | No — we pick SigLIP |
-| **LLM (BYOK)** | Rich descriptions, query understanding | User provides | Yes — Ollama, Hyperbolic, Anthropic, etc. |
-
-### SigLIP (Embedding Model)
-
-- **What:** Successor to CLIP, trained by Google
-- **Why:** Better zero-shot performance, cleaner embeddings
-- **How:** Exported to ONNX, runs via `ort` crate
-- **Size:** ~350MB for base model
-- **Distribution:** Downloaded to `~/.photon/models/` on first use
-
-### LLM Providers (BYOK)
-
-```toml
-# ~/.photon/config.toml
-
-# Local via Ollama
-[llm.ollama]
-enabled = true
-endpoint = "http://localhost:11434"
-model = "llama3.2-vision"
-
-# Self-hosted cloud via Hyperbolic
-[llm.hyperbolic]
-enabled = false
-endpoint = "https://api.hyperbolic.xyz/v1"
-api_key = "${HYPERBOLIC_API_KEY}"
-model = "meta-llama/Llama-3.2-11B-Vision-Instruct"
-
-# Commercial APIs
-[llm.anthropic]
-enabled = false
-api_key = "${ANTHROPIC_API_KEY}"
-model = "claude-sonnet-4-20250514"
-
-[llm.openai]
-enabled = false
-api_key = "${OPENAI_API_KEY}"
-model = "gpt-4o-mini"
+```json
+{"type": "enrichment", "content_hash": "a7f3b2c1d4e5f6...", "description": "A sandy tropical beach...", "llm_model": "claude-sonnet-4-20250514", "llm_latency_ms": 2340}
 ```
 
 ---
 
 ## Configuration
 
-```toml
-# ~/.photon/config.toml
+Photon uses a layered configuration system: **code defaults → TOML config file → CLI flags**. The config file lives at the platform-standard location (e.g., `~/Library/Application Support/com.photon.photon/config.toml` on macOS) with fallback to `~/.photon/config.toml`.
 
+```toml
 [general]
-# Where to store downloaded models
 model_dir = "~/.photon/models"
 
 [processing]
-# Default parallel workers
 parallel_workers = 4
-# Supported input formats
 supported_formats = ["jpg", "jpeg", "png", "webp", "heic", "raw", "cr2", "nef", "arw"]
 
-[pipeline]
-# Backpressure: max images buffered between stages
-buffer_size = 100
-# Retry on transient failures
-retry_attempts = 3
-retry_delay_ms = 1000
-
 [limits]
-# Skip files larger than this
 max_file_size_mb = 100
-# Skip images with dimensions exceeding this
 max_image_dimension = 10000
-# Timeouts per stage
 decode_timeout_ms = 5000
 embed_timeout_ms = 30000
 llm_timeout_ms = 60000
 
 [embedding]
-# SigLIP model variant
-model = "siglip-base-patch16"  # or "siglip-large-patch16" for higher quality
-# Inference device
-device = "metal"  # "cpu", "metal" (Apple), "cuda" (NVIDIA)
+model = "siglip-base-patch16"
 
 [thumbnail]
-# Generate thumbnails
 enabled = true
 size = 256
 format = "webp"
-quality = 80
 
 [tagging]
-# Minimum confidence to include a tag
-min_confidence = 0.5
-# Maximum tags per image
-max_tags = 20
-# Enable zero-shot tagging via SigLIP
-zero_shot_enabled = true
+enabled = true
+min_confidence = 0.0
+max_tags = 15
+deduplicate_ancestors = false
 
 [output]
-# Default output format
-format = "json"  # "json" or "jsonl"
-# Pretty print JSON
+format = "json"
 pretty = false
-# Include embedding in output (large!)
 include_embedding = true
 
-[logging]
-# Log level: error, warn, info, debug, trace
-level = "info"
-# Format: pretty (human-readable) or json (structured)
-format = "pretty"
+[llm.anthropic]
+api_key = "${ANTHROPIC_API_KEY}"
+model = "claude-sonnet-4-20250514"
+
+[llm.ollama]
+endpoint = "http://localhost:11434"
+model = "llama3.2-vision"
+```
+
+All numeric configuration fields are validated with range checks. `~` paths are expanded via `shellexpand`. Environment variable references (`${VAR}`) in API keys are expanded at runtime.
+
+---
+
+## Error Handling
+
+Errors are structured per-pipeline-stage with specific variants: `Decode`, `Metadata`, `Embedding`, `Tagging`, `Timeout`, `FileTooLarge`, `ImageTooLarge`, `UnsupportedFormat`, `FileNotFound`, `Llm`, and `Model`. Each error carries the file path and a descriptive message.
+
+A `.hint()` method on recoverable errors provides actionable recovery suggestions:
+
+```
+Error: Model not found at ~/.photon/models/siglip-base-patch16/visual.onnx
+Hint:  Run `photon models download` to install the required models.
+```
+
+In batch processing, each image either **fully succeeds** or **fully fails** — no partial state. Failed images are logged and processing continues with the next image.
+
+---
+
+## Data Directory
+
+```
+~/.photon/
+├── models/
+│   ├── siglip-base-patch16/          # Default 224px visual encoder
+│   │   └── visual.onnx              # ~348 MB
+│   ├── siglip-base-patch16-384/      # Optional 384px visual encoder
+│   │   └── visual.onnx
+│   ├── text_model.onnx              # Shared text encoder (~443 MB)
+│   └── tokenizer.json               # Shared tokenizer (~1 MB)
+├── vocabulary/
+│   ├── wordnet_nouns.txt            # ~68,000 WordNet nouns
+│   └── supplemental.txt            # ~260 supplemental visual terms
+└── taxonomy/
+    ├── label_bank.bin               # Pre-computed text embeddings (N×768, ~209 MB)
+    ├── label_bank.meta              # Vocabulary hash for cache invalidation
+    └── relevance.json               # Relevance tracker state (per-term pool stats)
+```
+
+Model downloads are verified with BLAKE3 checksums. Corrupt or incomplete downloads are automatically removed and re-downloaded.
+
+---
+
+## Installation & Distribution
+
+### From PyPI (recommended)
+
+```bash
+pip install photon-imager
+```
+
+Pre-built wheels for macOS (Apple Silicon) and Linux (x86_64, aarch64). Python 3.8+.
+
+### From Source
+
+```bash
+git clone https://github.com/hejijunhao/photon
+cd photon
+cargo build --release
+# Binary at target/release/photon
+```
+
+### From GitHub Releases
+
+Pre-built binaries for macOS (aarch64), Linux (x86_64), and Linux (aarch64) attached to each release.
+
+### First Run
+
+```bash
+photon models download    # Downloads ~800 MB of models + vocabulary
+photon process photo.jpg  # Process your first image
 ```
 
 ---
 
-## Logging
+## Technology Stack
 
-### Default Output (level: info)
-
-```
-[INFO] Photon v0.1.0
-[INFO] Processing 1000 images with 4 workers...
-[INFO] Progress: 500/1000 (50%) - 45.2 img/sec
-[ERROR] Failed: /photos/corrupt.jpg - decode - invalid JPEG header
-[INFO] Completed: 998 succeeded, 2 failed (45.2 img/sec)
-```
-
-### Verbose Output (--verbose or level: debug)
-
-```
-[DEBUG] Loading config from ~/.photon/config.toml
-[DEBUG] Using device: metal
-[DEBUG] Loading SigLIP model from ~/.photon/models/siglip-base-patch16/
-[DEBUG] Processing: /photos/beach.jpg
-[DEBUG]   Decode: 12ms
-[DEBUG]   EXIF: 2ms
-[DEBUG]   Embed: 85ms
-[DEBUG]   Tags: 15ms
-[DEBUG]   Total: 114ms
-```
-
-### JSON Logging (for machine parsing)
-
-```toml
-[logging]
-format = "json"
-```
-
-```json
-{"level":"INFO","message":"Processing 1000 images","workers":4}
-{"level":"ERROR","message":"Failed","path":"/photos/corrupt.jpg","stage":"decode","error":"invalid JPEG header"}
-{"level":"INFO","message":"Completed","succeeded":998,"failed":2,"rate":45.2}
-```
+| Component | Choice | Rationale |
+|---|---|---|
+| Language | **Rust** | Memory safety, no GC pauses, single static binary, native ONNX bindings |
+| ML Runtime | **ONNX Runtime** (via `ort` crate) | Run SigLIP natively without Python, Metal acceleration on Apple Silicon |
+| Embedding Model | **SigLIP** (Google) | Successor to CLIP, better zero-shot accuracy, aligned vision-text embeddings |
+| Content Hash | **BLAKE3** | Cryptographic strength at near-memcpy speed |
+| Perceptual Hash | **DoubleGradient** (16×16) | Robust near-duplicate detection via Hamming distance |
+| Image Decode | **image** crate | JPEG, PNG, WebP, GIF, TIFF, HEIC support |
+| EXIF | **kamadak-exif** | Lenient extraction with partial data recovery |
+| Async Runtime | **tokio** | Full-featured async runtime with spawn_blocking for CPU-bound work |
+| Matrix Ops | **ndarray** + **BLAS** | Accelerate framework on macOS for optimized matrix-vector multiply |
+| CLI Framework | **clap** (derive) | Type-safe argument parsing |
+| Progress UI | **indicatif** + **dialoguer** | Progress bars and interactive prompts |
+| Config Format | **TOML** | Human-readable, comment-preserving edits via `toml_edit` |
+| HTTP Client | **reqwest** (rustls-tls) | Pure-Rust TLS, no system OpenSSL dependency |
+| Python Dist | **maturin** | Binary wheel builds for PyPI |
 
 ---
 
-## Embedding in Your Backend
+## Platform Support
 
-### Python Example
+| Platform | Status | Notes |
+|---|---|---|
+| macOS (Apple Silicon) | Primary | Metal acceleration via ONNX Runtime, Accelerate BLAS for scoring |
+| Linux x86_64 | Supported | Pre-built binaries and PyPI wheels |
+| Linux aarch64 | Supported | Native ARM builds on GitHub's arm64 runners |
+| macOS (Intel) | Not supported | No pre-built ONNX Runtime binaries for cross-compilation |
 
-```python
-import subprocess
-import json
+### Important Constraints
 
-def process_image(image_path: str) -> dict:
-    """Process an image with Photon and return structured data."""
-    result = subprocess.run(
-        ["photon", "process", image_path],
-        capture_output=True,
-        text=True
-    )
-    return json.loads(result.stdout)
-
-# Usage
-data = process_image("/photos/beach.jpg")
-
-# Store in your database
-db.images.insert({
-    "path": data["file_path"],
-    "hash": data["content_hash"],
-    "embedding": data["embedding"],  # Store in pgvector, Pinecone, etc.
-    "tags": data["tags"],
-    "metadata": data["exif"]
-})
-```
-
-### Rust Example (Direct Library Use)
-
-```rust
-use photon_core::{Photon, Config, ProcessOptions};
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let photon = Photon::new(Config::default()).await?;
-
-    let result = photon.process("./image.jpg", ProcessOptions {
-        generate_thumbnail: true,
-        use_llm: Some("anthropic"),
-        ..Default::default()
-    }).await?;
-
-    println!("Embedding: {:?}", result.embedding);
-    println!("Tags: {:?}", result.tags);
-
-    // Store in your database...
-
-    Ok(())
-}
-```
-
-### Node.js Example
-
-```javascript
-const { execSync } = require('child_process');
-
-function processImage(imagePath) {
-  const output = execSync(`photon process "${imagePath}"`);
-  return JSON.parse(output.toString());
-}
-
-// Usage
-const data = processImage('/photos/beach.jpg');
-
-// Store in your database (e.g., with pgvector)
-await db.query(
-  `INSERT INTO images (path, hash, embedding, tags)
-   VALUES ($1, $2, $3, $4)`,
-  [data.file_path, data.content_hash, data.embedding, data.tags]
-);
-```
+- **fp32 models only** — fp16 ONNX models crash on aarch64. All shipped models are fp32.
+- **SigLIP `pooler_output`** — The text encoder must use the 2nd output tensor (`pooler_output`), not `last_hidden_state`. They are not aligned across vision and text modalities.
 
 ---
 
-## Implementation Phases
+## Testing & CI
 
-### Phase 1: Foundation (1 week)
-- [ ] Cargo workspace with `photon` and `photon-core` crates
-- [ ] CLI skeleton with clap (`photon process`, `photon models`, `photon config`)
-- [ ] Configuration system (TOML-based)
-- [ ] Output formatting (JSON, JSONL)
-- [ ] Structured logging with tracing
-- [ ] Basic error types with thiserror
+### Test Suite
 
-**Milestone:** `photon --help` works, `photon config show` displays config
+226 tests across the workspace:
+- **40 CLI tests** — argument parsing, interactive flows, config management
+- **166 core library tests** — per-stage unit tests, error handling, serialization
+- **20 integration tests** — end-to-end pipeline against real image fixtures
 
-### Phase 2: Image Pipeline (2 weeks)
-- [ ] Image decoding with `image` crate (jpg, png, webp, heic)
-- [ ] EXIF extraction with `kamadak-exif`
-- [ ] Content hashing with blake3
-- [ ] Perceptual hashing with `image_hasher`
-- [ ] Thumbnail generation (WebP output)
-- [ ] Batch file discovery with filtering
-- [ ] Input validation (file size, dimensions)
-- [ ] Decode timeout
+### CI Pipeline (GitHub Actions)
 
-**Milestone:** `photon process image.jpg` outputs metadata, hash, thumbnail
+| Workflow | Trigger | What It Does |
+|---|---|---|
+| **ci.yml** | Push/PR to `master` | `cargo check` + `cargo test` on macOS-14 and Ubuntu; `cargo fmt --check` + `cargo clippy -D warnings` on Ubuntu |
+| **pypi.yml** | Git tag `v*` | Build wheels for 3 platforms, publish to PyPI via trusted publisher |
+| **release.yml** | Git tag `v*` | Build release binaries for 3 platforms, upload to GitHub Releases |
 
-### Phase 3: SigLIP Embedding (2 weeks)
-- [ ] ONNX Runtime setup with Metal acceleration
-- [ ] SigLIP model download on first run
-- [ ] Image preprocessing (resize, normalize)
-- [ ] Embedding generation
-- [ ] Batch processing with bounded channels (backpressure)
-- [ ] Embedding timeout
+### Benchmarks
 
-**Milestone:** `photon process image.jpg` outputs 768-dim embedding vector
+Criterion benchmarks covering the pipeline hot path:
 
-### Phase 4: Zero-Shot Tagging (1 week)
-- [ ] SigLIP text encoder integration
-- [ ] Tag taxonomy/vocabulary
-- [ ] Zero-shot classification
-- [ ] Confidence scoring and filtering
+- `content_hash_blake3` — Hashing throughput
+- `perceptual_hash` — DoubleGradient computation
+- `decode_image` — Image decode from bytes
+- `thumbnail_256px` — WebP generation
+- `score_68k_matvec` — Full vocabulary scoring (68K×768 matrix-vector multiply)
+- `preprocess_224` / `preprocess_384` — SigLIP input preparation
+- `process_e2e_dog_jpg` — Full single-image pipeline
+- `batch_4_images` — Concurrent batch throughput
 
-**Milestone:** `photon process image.jpg` outputs semantic tags
-
-### Phase 5: LLM Integration (2 weeks)
-- [ ] LLM provider trait abstraction
-- [ ] Ollama integration (local)
-- [ ] Hyperbolic integration (self-hosted cloud)
-- [ ] Anthropic integration (commercial)
-- [ ] OpenAI integration (commercial)
-- [ ] Description generation
-- [ ] Retry logic for transient failures
-- [ ] LLM timeout
-
-**Milestone:** `photon process image.jpg --llm anthropic` outputs AI description
-
-### Phase 6: Polish & Release (1 week)
-- [ ] Parallel batch processing with progress bar
-- [ ] `--skip-existing` flag for incremental processing
-- [ ] Summary stats at end of run
-- [ ] Comprehensive error messages
-- [ ] Performance optimization
-- [ ] Documentation and examples
-- [ ] GitHub release with binaries
-
-**Milestone:** v0.1.0 release
+Run with `cargo bench -p photon-core`.
 
 ---
 
-## Performance Targets
+## What Photon Does Not Do
 
-| Operation | Target | Hardware |
-|-----------|--------|----------|
-| Image decode + metadata | 200 img/sec | M1 Mac |
-| SigLIP embedding | 50-100 img/min | M1 Mac (Metal) |
-| Full pipeline (no LLM) | 50 img/min | M1 Mac |
-| Full pipeline (with LLM) | 10-20 img/min | Depends on LLM provider |
+Photon is intentionally scoped as a pure processing pipeline:
 
----
+- **No database** — Your backend handles storage (pgvector, Pinecone, Qdrant, SQLite, whatever you want).
+- **No search** — Use your database's vector similarity search on the embeddings Photon produces.
+- **No API server** — Photon is a CLI and library, not a web service. Build your API on top.
+- **No file watching** — Your backend triggers processing when new images arrive.
+- **No web UI** — Build your own frontend. Photon outputs the data.
 
-## What Photon Does NOT Do
-
-To keep scope focused, Photon intentionally excludes:
-
-- ❌ **Database management** — Your backend handles storage
-- ❌ **Vector search** — Use pgvector, Pinecone, Qdrant in your backend
-- ❌ **API server** — Photon is a CLI/library, not a service
-- ❌ **File watching** — Your backend triggers processing
-- ❌ **User authentication** — Not applicable
-- ❌ **Web UI** — Build your own on top
-
----
-
-## Future Considerations
-
-After v1.0, potential additions:
-
-- **CUDA support** — For non-Apple hardware
-- **Additional models** — OpenCLIP variants, DINOv2
-- **Video support** — Frame extraction and processing
-- **OCR** — Text extraction from images
-- **Face detection** — Optional face embedding output
-- **WASM build** — Run in browser
-- **Pluggable enhancers** — Custom processing stages
-
----
-
-## Next Steps
-
-1. ✅ Finalize this blueprint
-2. Begin Phase 1: Foundation
-3. Set up CI/CD pipeline
-4. Create initial release structure
+This separation of concerns means Photon fits into any architecture. Pipe its JSONL output into a Python script, a Go service, a Node.js ingestor, or a shell pipeline. It doesn't care what's downstream.
